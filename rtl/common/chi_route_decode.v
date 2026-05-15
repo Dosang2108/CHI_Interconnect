@@ -5,6 +5,7 @@ module chi_route_decode #(
     parameter ADDR_WIDTH  = `CHI_DEFAULT_ADDR_W,
     parameter NODE_ID_W   = `CHI_DEFAULT_NODE_ID_W,
     parameter NUM_OUT     = `CHI_DEFAULT_NUM_TGT,
+    parameter BASE_ID     = 0,
     parameter ROUTE_ID_W  = 4
 )(
     input                    valid,
@@ -20,6 +21,7 @@ module chi_route_decode #(
 
     integer i;
     integer tgt_index;
+    integer base_index;
 
     chi_addr_decoder #(
         .ADDR_WIDTH(ADDR_WIDTH),
@@ -38,14 +40,15 @@ module chi_route_decode #(
         route_onehot = {NUM_OUT{1'b0}};
         route_error  = 1'b0;
         tgt_index    = 0;
+        base_index   = BASE_ID;
 
         if (USE_ADDR) begin
             route_id     = addr_route_id;
             route_onehot = addr_route_onehot;
             route_error  = addr_decode_error;
         end else if (valid) begin
-            tgt_index = tgt_id;
-            if (tgt_index < NUM_OUT) begin
+            tgt_index = tgt_id - base_index;
+            if ((tgt_index >= 0) && (tgt_index < NUM_OUT)) begin
                 route_id = tgt_index;
                 for (i = 0; i < NUM_OUT; i = i + 1) begin
                     route_onehot[i] = (i == tgt_index);

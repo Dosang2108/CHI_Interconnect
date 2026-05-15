@@ -62,7 +62,7 @@
 
 // Helpers for flattened flit widths.
 // REQ lower fields keep the original skeleton layout. Attribute fields are
-// appended above QoS so old extract logic remains valid while the format grows.
+// appended above QoS so old extract code remains valid while the format grows.
 `define CHI_REQ_W(ADDR_W,NODE_ID_W,TXN_ID_W,QOS_W) \
     ((ADDR_W) + 3 + 6 + (TXN_ID_W) + (NODE_ID_W) + (NODE_ID_W) + (QOS_W) + \
      1 + 1 + 2 + (NODE_ID_W) + (TXN_ID_W))

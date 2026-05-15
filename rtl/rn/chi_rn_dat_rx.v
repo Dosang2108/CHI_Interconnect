@@ -16,6 +16,7 @@ module chi_rn_dat_rx #(
     output                   data_valid,
     output     [DATA_WIDTH-1:0] data,
     output     [TXN_ID_W-1:0] txn_id,
+    output     [NODE_ID_W-1:0] src_id,
     output     [1:0]         resp_err,
     output     [2:0]         resp,
     output                   line_valid,
@@ -130,6 +131,7 @@ module chi_rn_dat_rx #(
     assign data_valid   = rx_fire;
     assign data         = flit_data;
     assign txn_id       = flit_txn_id;
+    assign src_id       = dat_flit_buf[DAT_SRC_LSB +: NODE_ID_W];
     assign resp_err     = flit_resp_err;
     assign resp         = flit_resp;
     assign line_valid   = line_complete_next;

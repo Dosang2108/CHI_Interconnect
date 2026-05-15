@@ -45,4 +45,20 @@ module chi_credit_counter #(
             endcase
         end
     end
+
+    // synthesis translate_off
+    always @(posedge clk) begin
+        if (rstn && !clear) begin
+            if (underflow) begin
+                $display("chi_credit_counter underflow");
+                $stop;
+            end
+
+            if (overflow) begin
+                $display("chi_credit_counter overflow");
+                $stop;
+            end
+        end
+    end
+    // synthesis translate_on
 endmodule
