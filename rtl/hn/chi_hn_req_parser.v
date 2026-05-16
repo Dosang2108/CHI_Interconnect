@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_hn_req_parser
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_hn_req_parser #(
     parameter ADDR_WIDTH = `CHI_DEFAULT_ADDR_W,
     parameter NODE_ID_W  = `CHI_DEFAULT_NODE_ID_W,

@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_rn_snoop_handler
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_rn_snoop_handler #(
     parameter ADDR_WIDTH = `CHI_DEFAULT_ADDR_W,
     parameter DATA_WIDTH = `CHI_DEFAULT_DATA_W,
@@ -65,24 +69,28 @@ module chi_rn_snoop_handler #(
     localparam BE_W = DATA_WIDTH / 8;
     localparam BEATS = LINE_BYTES / BE_W;
     localparam LINE_WIDTH = LINE_BYTES * 8;
-    localparam ST_IDLE = 2'd0;
-    localparam ST_LOOKUP = 2'd1;
-    localparam ST_SEND_DAT = 2'd2;
-    localparam ST_SEND_RSP = 2'd3;
+    localparam ST_IDLE = 3'd0;
+    localparam ST_LOOKUP = 3'd1;
+    localparam ST_DVM_ORDER = 3'd2;
+    localparam ST_SEND_DAT = 3'd3;
+    localparam ST_SEND_RSP = 3'd4;
 
-    reg [1:0]           state_q;
+    reg [2:0]           state_q;
     reg [`CHI_SNP_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W)-1:0] snp_flit_q;
     reg [LINE_WIDTH-1:0] data_q;
     reg                  hit_q;
     reg                  dirty_q;
     reg [2:0]            state_resp_q;
-    reg                  send_data_q;
     reg [3:0]            beat_q;
 
     wire [ADDR_WIDTH-1:0] snp_addr = rx_snp_flit[SNP_ADDR_LSB +: ADDR_WIDTH];
     wire [5:0]           snp_opcode = rx_snp_flit[SNP_OPCODE_LSB +: 6];
     wire [ADDR_WIDTH-1:0] latched_addr = snp_flit_q[SNP_ADDR_LSB +: ADDR_WIDTH];
     wire [5:0]           latched_opcode = snp_flit_q[SNP_OPCODE_LSB +: 6];
+    wire                 snp_is_dvm = (snp_opcode == `CHI_SNP_DVM_OP) ||
+                                      (snp_opcode == `CHI_SNP_DVM_SYNC);
+    wire                 latched_is_dvm = (latched_opcode == `CHI_SNP_DVM_OP) ||
+                                          (latched_opcode == `CHI_SNP_DVM_SYNC);
     wire                 accept_snp = (state_q == ST_IDLE) && rx_snp_valid;
     wire                 dat_fire = tx_dat_valid && tx_dat_ready;
     wire                 rsp_fire = tx_rsp_valid && tx_rsp_ready;
@@ -92,16 +100,17 @@ module chi_rn_snoop_handler #(
     wire [QOS_W-1:0]     latched_qos = snp_flit_q[SNP_QOS_LSB +: QOS_W];
 
     assign rx_snp_lcrdv = accept_snp;
-    assign cache_snoop_valid = (state_q == ST_LOOKUP);
+    assign cache_snoop_valid = (state_q == ST_LOOKUP) && !latched_is_dvm;
     assign cache_snoop_addr = (state_q == ST_IDLE) ? snp_addr : latched_addr;
     assign cache_snoop_opcode = (state_q == ST_IDLE) ? snp_opcode : latched_opcode;
-    assign cache_snoop_commit = rsp_fire;
+    assign cache_snoop_commit = rsp_fire && !latched_is_dvm;
     assign tx_dat_valid = (state_q == ST_SEND_DAT);
     assign tx_rsp_valid = (state_q == ST_SEND_RSP);
 
     always @(*) begin
         tx_rsp_flit = {`CHI_RSP_W(NODE_ID_W,TXN_ID_W,QOS_W,DBID_W){1'b0}};
-        tx_rsp_flit[RSP_RESP_LSB +: 3]        = {1'b0, dirty_q, hit_q};
+        tx_rsp_flit[RSP_RESP_LSB +: 3]        =
+            latched_is_dvm ? `CHI_RESP_DVM_ACK : {1'b0, dirty_q, hit_q};
         tx_rsp_flit[RSP_RESPERR_LSB +: 2]     = `CHI_RESPERR_OK;
         tx_rsp_flit[RSP_DBID_LSB +: DBID_W]   = {DBID_W{1'b0}};
         tx_rsp_flit[RSP_OPCODE_LSB +: 4]      = `CHI_RSP_SNP_RESP;
@@ -133,7 +142,6 @@ module chi_rn_snoop_handler #(
             hit_q <= 1'b0;
             dirty_q <= 1'b0;
             state_resp_q <= 3'd0;
-            send_data_q <= 1'b0;
             beat_q <= 4'd0;
         end else begin
             case (state_q)
@@ -141,21 +149,31 @@ module chi_rn_snoop_handler #(
                     if (accept_snp) begin
                         snp_flit_q <= rx_snp_flit;
                         beat_q <= 4'd0;
-                        state_q <= ST_LOOKUP;
+                        if (snp_is_dvm)
+                            state_q <= ST_DVM_ORDER;
+                        else
+                            state_q <= ST_LOOKUP;
                     end
                 end
 
                 ST_LOOKUP: begin
-                        data_q <= cache_data;
-                        hit_q <= cache_hit;
-                        dirty_q <= cache_dirty;
-                        state_resp_q <= cache_state;
-                        send_data_q <= cache_send_data;
-                        beat_q <= 4'd0;
-                        if (cache_send_data)
-                            state_q <= ST_SEND_DAT;
-                        else
-                            state_q <= ST_SEND_RSP;
+                    data_q <= cache_data;
+                    hit_q <= cache_hit;
+                    dirty_q <= cache_dirty;
+                    state_resp_q <= cache_state;
+                    beat_q <= 4'd0;
+                    if (cache_send_data)
+                        state_q <= ST_SEND_DAT;
+                    else
+                        state_q <= ST_SEND_RSP;
+                end
+
+                ST_DVM_ORDER: begin
+                    hit_q <= 1'b0;
+                    dirty_q <= 1'b0;
+                    state_resp_q <= `CHI_RESP_DVM_ACK;
+                    beat_q <= 4'd0;
+                    state_q <= ST_SEND_RSP;
                 end
 
                 ST_SEND_DAT: begin

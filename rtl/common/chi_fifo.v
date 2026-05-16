@@ -1,5 +1,9 @@
 `include "chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_fifo
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_fifo #(
     parameter WIDTH = 128,
     parameter DEPTH = `CHI_DEFAULT_FIFO_DEPTH
@@ -15,19 +19,9 @@ module chi_fifo #(
     output     [WIDTH-1:0] out_data,
     output     [15:0]      used_count
 );
-    function integer clog2;
-        input integer value;
-        integer i;
-        begin
-            value = value - 1;
-            for (i = 0; value > 0; i = i + 1)
-                value = value >> 1;
-            clog2 = i;
-        end
-    endfunction
-
-    localparam PTR_W   = (DEPTH <= 2) ? 1 : clog2(DEPTH);
-    localparam COUNT_W = (DEPTH <= 1) ? 1 : clog2(DEPTH + 1);
+    `include "chi_clog2.vh"
+    localparam PTR_W   = (DEPTH <= 2) ? 1 : `CHI_CLOG2(DEPTH);
+    localparam COUNT_W = (DEPTH <= 1) ? 1 : `CHI_CLOG2(DEPTH + 1);
     localparam [COUNT_W-1:0] DEPTH_COUNT = DEPTH;
 
     reg [WIDTH-1:0] mem [0:DEPTH-1];

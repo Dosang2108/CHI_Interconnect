@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_hn_f
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_hn_f #(
     parameter NODE_ID    = 0,
     parameter MEM_TGT_ID = 0,
@@ -12,6 +16,7 @@ module chi_hn_f #(
     parameter DBID_W     = `CHI_DEFAULT_DBID_W,
     parameter INIT_CRD   = `CHI_DEFAULT_INIT_CRD,
     parameter POS_DEPTH  = 16,
+    parameter WR_TRACKER_DEPTH = 8,
     parameter TIMEOUT_CYCLES = 1024
 )(
     input                    clk,
@@ -49,17 +54,7 @@ module chi_hn_f #(
     input                    mem_dat_ready,
     output reg [`CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W)-1:0] mem_dat_flit
 );
-    function integer clog2;
-        input integer value;
-        integer i;
-        begin
-            value = value - 1;
-            for (i = 0; value > 0; i = i + 1)
-                value = value >> 1;
-            clog2 = i;
-        end
-    endfunction
-
+    `include "../common/chi_clog2.vh"
     localparam REQ_W = `CHI_REQ_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W);
     localparam RSP_W = `CHI_RSP_W(NODE_ID_W,TXN_ID_W,QOS_W,DBID_W);
     localparam SNP_W = `CHI_SNP_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W);
@@ -69,7 +64,7 @@ module chi_hn_f #(
     localparam LINE_WIDTH = LINE_BYTES * 8;
     localparam BE_W = DATA_WIDTH / 8;
     localparam BEATS = LINE_BYTES / BE_W;
-    localparam TIMEOUT_W = (TIMEOUT_CYCLES <= 2) ? 1 : clog2(TIMEOUT_CYCLES + 1);
+    localparam TIMEOUT_W = (TIMEOUT_CYCLES <= 2) ? 1 : `CHI_CLOG2(TIMEOUT_CYCLES + 1);
     localparam [TIMEOUT_W-1:0] TIMEOUT_VALUE = TIMEOUT_CYCLES;
 
     localparam REQ_OPCODE_LSB = `CHI_REQ_OPCODE_LSB(ADDR_WIDTH);
@@ -178,26 +173,39 @@ module chi_hn_f #(
     wire [15:0]          dat_sink_used_unused;
     wire [3:0]           dat_data_id;
     wire                 dat_data_id_ok;
+    wire [TXN_ID_W-1:0]  dat_txn_id;
+    wire                 dat_txn_match;
     wire [BEATS-1:0]     mem_beat_mask_next;
     wire [LINE_WIDTH-1:0] mem_line_next;
+    wire [BEATS-1:0]     snp_beat_mask_next;
+    wire [LINE_WIDTH-1:0] snp_line_next;
     wire                 mem_dat_beat_fire;
     wire                 backinv_dat_beat_fire;
+    wire                 snp_dat_beat_fire;
     wire                 dat_line_beat_fire;
     wire                 mem_line_complete;
+    wire                 snp_line_complete;
+    wire                 backinv_line_complete;
 
     wire                 rsp_sink_in_ready;
     wire                 rsp_sink_valid;
     wire [RSP_W-1:0]     rsp_sink_flit;
     wire [15:0]          rsp_sink_used_unused;
+    wire [2:0]           rsp_resp;
     wire [3:0]           rsp_opcode;
     wire [TXN_ID_W-1:0]  rsp_txn_id;
     wire [NODE_ID_W-1:0] rsp_src_id;
     wire                 snp_rsp_fire;
+    wire                 snp_rsp_source_expected;
     wire                 comp_ack_fire;
     wire                 mem_rsp_drop_fire;
     wire                 rsp_sink_pop;
     reg  [NUM_RN-1:0]    snp_rsp_onehot;
     wire [NUM_RN-1:0]    snp_wait_mask_next;
+    wire                 snp_rsp_dirty;
+    wire                 snp_data_expected_next;
+    wire                 backinv_ready_for_exit;
+    wire                 snp_ready_for_exit;
     integer              snp_rsp_idx;
 
     wire                 resp_valid;
@@ -209,6 +217,16 @@ module chi_hn_f #(
     wire [RSP_W-1:0]     tx_rsp_link_flit;
     wire                 wr_comp_ready;
     wire                 err_rsp_ready;
+    wire                 wr_tracker_alloc_ready;
+    wire                 wr_tracker_comp_valid;
+    wire                 wr_tracker_comp_ready;
+    wire                 wr_tracker_comp_match;
+    wire                 wr_tracker_rsp_valid;
+    wire                 wr_tracker_rsp_ready;
+    wire [TXN_ID_W-1:0]  wr_tracker_rsp_txn_id;
+    wire [NODE_ID_W-1:0] wr_tracker_rsp_tgt_id;
+    wire [QOS_W-1:0]     wr_tracker_rsp_qos;
+    wire [15:0]          wr_tracker_used_unused;
     wire [3:0]           tx_rsp_credit_unused;
     wire                 mem_issuer_ready;
     wire                 mem_issue_valid;
@@ -234,14 +252,13 @@ module chi_hn_f #(
     reg  [NUM_RN-1:0]    backinv_sharer_vec_q;
     reg  [LINE_WIDTH-1:0] mem_line_q;
     reg  [BEATS-1:0]      mem_beat_mask_q;
+    reg  [LINE_WIDTH-1:0] snp_line_q;
+    reg  [BEATS-1:0]      snp_beat_mask_q;
     reg  [LINE_WIDTH-1:0] resp_line_q;
     reg  [3:0]            resp_beat_q;
     reg                   snp_data_seen_q;
-    reg                   wr_pending_q;
-    reg                   wr_comp_valid_q;
-    reg [TXN_ID_W-1:0]    wr_txn_q;
-    reg [NODE_ID_W-1:0]   wr_src_q;
-    reg [QOS_W-1:0]       wr_qos_q;
+    reg                   snp_data_expected_q;
+    reg                   backinv_data_seen_q;
     reg [RSP_W-1:0]       wr_comp_flit;
     reg                   err_rsp_valid_q;
     reg [TXN_ID_W-1:0]    err_txn_q;
@@ -300,7 +317,7 @@ module chi_hn_f #(
                             !start_snoop_data_ack && req_is_read &&
                             !llc_hit && mem_issuer_ready;
     assign start_write = parsed_valid && !need_backinv && !need_snoop &&
-                         req_is_write && !wr_pending_q && !wr_comp_valid_q &&
+                         req_is_write && wr_tracker_alloc_ready &&
                          mem_issuer_ready && resp_req_ready;
     assign start_other_resp = parsed_valid && !need_backinv && !need_snoop &&
                               !req_is_read && !req_is_write && resp_req_ready;
@@ -339,36 +356,58 @@ module chi_hn_f #(
                                (snp_send_mask_next == {NUM_RN{1'b0}}) :
                                (snp_send_mask_q == {NUM_RN{1'b0}});
 
+    assign rsp_resp = rsp_sink_flit[RSP_RESP_LSB +: 3];
     assign rsp_opcode = rsp_sink_flit[RSP_OPCODE_LSB +: 4];
     assign rsp_txn_id = rsp_sink_flit[RSP_TXN_LSB +: TXN_ID_W];
     assign rsp_src_id = rsp_sink_flit[RSP_SRC_LSB +: NODE_ID_W];
+    assign snp_rsp_source_expected = |(snp_wait_mask_q & snp_rsp_onehot);
     assign snp_rsp_fire = rsp_sink_valid &&
                           ((state_q == HN_ST_BACKINV) ||
                            (state_q == HN_ST_WAIT_SNP)) &&
-                          (rsp_opcode == `CHI_RSP_SNP_RESP);
+                          (rsp_opcode == `CHI_RSP_SNP_RESP) &&
+                          (rsp_txn_id == req_txn_id) &&
+                          snp_rsp_source_expected;
     assign comp_ack_fire = rsp_sink_valid &&
                            (state_q == HN_ST_WAIT_ACK) &&
                            (rsp_opcode == `CHI_RSP_COMP_ACK) &&
                            (rsp_txn_id == req_txn_id);
-    assign mem_rsp_drop_fire = rsp_sink_valid &&
+    assign wr_tracker_comp_valid = rsp_sink_valid &&
                                ((rsp_opcode == `CHI_RSP_COMP) ||
-                                (rsp_opcode == `CHI_RSP_COMP_DBID)) &&
-                               !wr_comp_valid_q;
+                                (rsp_opcode == `CHI_RSP_COMP_DBID));
+    assign mem_rsp_drop_fire = wr_tracker_comp_valid && wr_tracker_comp_ready;
     assign rsp_sink_pop = snp_rsp_fire || comp_ack_fire || mem_rsp_drop_fire;
     assign snp_wait_mask_next = snp_wait_mask_q & ~snp_rsp_onehot;
     assign snp_wait_done = ((snp_rsp_fire ? snp_wait_mask_next : snp_wait_mask_q) ==
                             {NUM_RN{1'b0}});
+    assign snp_rsp_dirty = rsp_resp[`CHI_RESP_DIRTY_BIT];
+    assign snp_data_expected_next = snp_data_expected_q ||
+                                    (snp_rsp_fire && snp_rsp_dirty);
+    assign backinv_ready_for_exit = !snp_data_expected_next ||
+                                    backinv_data_seen_q ||
+                                    backinv_line_complete;
+    assign snp_ready_for_exit = !snp_data_expected_next ||
+                                snp_data_seen_q ||
+                                snp_line_complete;
 
     assign dat_data_id = dat_sink_flit[DAT_DATAID_LSB +: 4];
     assign dat_data_id_ok = (dat_data_id < BEATS);
+    assign dat_txn_id = dat_sink_flit[DAT_TXN_LSB +: TXN_ID_W];
+    assign dat_txn_match = (dat_txn_id == req_txn_id);
     assign mem_dat_beat_fire = dat_sink_valid &&
                                (state_q == HN_ST_WAIT_MEM) &&
                                dat_sink_out_ready &&
-                               dat_data_id_ok;
+                               dat_data_id_ok &&
+                               dat_txn_match;
     assign backinv_dat_beat_fire = dat_sink_valid &&
                                    (state_q == HN_ST_BACKINV) &&
                                    dat_sink_out_ready &&
-                                   dat_data_id_ok;
+                                   dat_data_id_ok &&
+                                   dat_txn_match;
+    assign snp_dat_beat_fire = dat_sink_valid &&
+                               (state_q == HN_ST_WAIT_SNP) &&
+                               dat_sink_out_ready &&
+                               dat_data_id_ok &&
+                               dat_txn_match;
     assign dat_line_beat_fire = mem_dat_beat_fire || backinv_dat_beat_fire;
     assign mem_line_next = mem_line_q |
                            ({{(LINE_WIDTH-DATA_WIDTH){1'b0}},
@@ -376,17 +415,24 @@ module chi_hn_f #(
                             (dat_data_id * DATA_WIDTH));
     assign mem_beat_mask_next = mem_beat_mask_q | ({{(BEATS-1){1'b0}}, 1'b1} << dat_data_id);
     assign mem_line_complete = dat_line_beat_fire && (&mem_beat_mask_next);
+    assign backinv_line_complete = backinv_dat_beat_fire && (&mem_beat_mask_next);
+    assign snp_line_next = snp_line_q |
+                           ({{(LINE_WIDTH-DATA_WIDTH){1'b0}},
+                             dat_sink_flit[DAT_DATA_LSB +: DATA_WIDTH]} <<
+                            (dat_data_id * DATA_WIDTH));
+    assign snp_beat_mask_next = snp_beat_mask_q | ({{(BEATS-1){1'b0}}, 1'b1} << dat_data_id);
+    assign snp_line_complete = snp_dat_beat_fire && (&snp_beat_mask_next);
 
-    assign snp_dat_valid = dat_sink_valid && (state_q == HN_ST_WAIT_SNP);
+    assign snp_dat_valid = 1'b0;
     assign resp_dat_valid = (state_q == HN_ST_SEND_DAT);
-    assign tx_dat_link_valid = snp_dat_valid || resp_dat_valid;
-    assign tx_dat_link_flit = snp_dat_valid ? snp_dat_flit : resp_dat_flit;
-    assign snp_dat_ready = tx_dat_link_ready;
-    assign resp_dat_ready = tx_dat_link_ready && !snp_dat_valid;
+    assign tx_dat_link_valid = resp_dat_valid;
+    assign tx_dat_link_flit = resp_dat_flit;
+    assign snp_dat_ready = 1'b0;
+    assign resp_dat_ready = tx_dat_link_ready;
     assign resp_dat_fire = resp_dat_valid && resp_dat_ready;
     assign resp_dat_last = resp_dat_fire && (resp_beat_q == (BEATS - 1));
 
-    assign dat_sink_out_ready = (state_q == HN_ST_WAIT_SNP) ? snp_dat_ready :
+    assign dat_sink_out_ready = (state_q == HN_ST_WAIT_SNP) ? 1'b1 :
                                 (state_q == HN_ST_WAIT_MEM) ? 1'b1 :
                                 (state_q == HN_ST_BACKINV)  ? 1'b1 :
                                 mem_dat_ready;
@@ -396,13 +442,14 @@ module chi_hn_f #(
                            (state_q != HN_ST_WAIT_MEM) &&
                            (state_q != HN_ST_BACKINV);
 
-    assign tx_rsp_link_valid = resp_valid || wr_comp_valid_q || err_rsp_valid_q;
+    assign tx_rsp_link_valid = resp_valid || wr_tracker_rsp_valid || err_rsp_valid_q;
     assign tx_rsp_link_flit = resp_valid ? resp_flit :
-                              (wr_comp_valid_q ? wr_comp_flit :
+                              (wr_tracker_rsp_valid ? wr_comp_flit :
                                err_rsp_flit);
     assign resp_ready = tx_rsp_link_ready;
     assign wr_comp_ready = tx_rsp_link_ready && !resp_valid;
-    assign err_rsp_ready = tx_rsp_link_ready && !resp_valid && !wr_comp_valid_q;
+    assign wr_tracker_rsp_ready = wr_comp_ready;
+    assign err_rsp_ready = tx_rsp_link_ready && !resp_valid && !wr_tracker_rsp_valid;
 
     assign state_timeout_en = (state_q == HN_ST_BACKINV) ||
                               (state_q == HN_ST_WAIT_SNP) ||
@@ -412,9 +459,9 @@ module chi_hn_f #(
     assign state_timeout_fire = state_timeout_en &&
                                 (timeout_cnt_q >= TIMEOUT_VALUE);
 
-    assign llc_update_valid = mem_line_complete;
+    assign llc_update_valid = mem_line_complete || snp_line_complete;
     assign llc_update_addr = (state_q == HN_ST_BACKINV) ? backinv_addr_q : req_addr;
-    assign llc_update_data = mem_line_next;
+    assign llc_update_data = snp_line_complete ? snp_line_next : mem_line_next;
     assign llc_update_state = (state_q == HN_ST_BACKINV) ? `CHI_STATE_SC :
                               ((req_opcode == `CHI_REQ_RD_UNIQUE) ?
                                `CHI_STATE_UC : `CHI_STATE_SC);
@@ -489,10 +536,10 @@ module chi_hn_f #(
         wr_comp_flit[RSP_RESPERR_LSB +: 2]     = `CHI_RESPERR_OK;
         wr_comp_flit[RSP_DBID_LSB +: DBID_W]   = {DBID_W{1'b0}};
         wr_comp_flit[RSP_OPCODE_LSB +: 4]      = `CHI_RSP_COMP;
-        wr_comp_flit[RSP_TXN_LSB +: TXN_ID_W]  = wr_txn_q;
+        wr_comp_flit[RSP_TXN_LSB +: TXN_ID_W]  = wr_tracker_rsp_txn_id;
         wr_comp_flit[RSP_SRC_LSB +: NODE_ID_W] = NODE_ID;
-        wr_comp_flit[RSP_TGT_LSB +: NODE_ID_W] = wr_src_q;
-        wr_comp_flit[RSP_QOS_LSB +: QOS_W]     = wr_qos_q;
+        wr_comp_flit[RSP_TGT_LSB +: NODE_ID_W] = wr_tracker_rsp_tgt_id;
+        wr_comp_flit[RSP_QOS_LSB +: QOS_W]     = wr_tracker_rsp_qos;
     end
 
     always @(*) begin
@@ -537,30 +584,21 @@ module chi_hn_f #(
             snp_wait_mask_q <= {NUM_RN{1'b0}};
             mem_line_q <= {LINE_WIDTH{1'b0}};
             mem_beat_mask_q <= {BEATS{1'b0}};
+            snp_line_q <= {LINE_WIDTH{1'b0}};
+            snp_beat_mask_q <= {BEATS{1'b0}};
             resp_line_q <= {LINE_WIDTH{1'b0}};
             resp_beat_q <= 4'd0;
             snp_data_seen_q <= 1'b0;
-            wr_pending_q <= 1'b0;
-            wr_comp_valid_q <= 1'b0;
-            wr_txn_q <= {TXN_ID_W{1'b0}};
-            wr_src_q <= {NODE_ID_W{1'b0}};
-            wr_qos_q <= {QOS_W{1'b0}};
+            snp_data_expected_q <= 1'b0;
+            backinv_data_seen_q <= 1'b0;
             err_rsp_valid_q <= 1'b0;
             err_txn_q <= {TXN_ID_W{1'b0}};
             err_tgt_q <= {NODE_ID_W{1'b0}};
             err_qos_q <= {QOS_W{1'b0}};
             timeout_cnt_q <= {TIMEOUT_W{1'b0}};
         end else begin
-            if (wr_comp_valid_q && wr_comp_ready)
-                wr_comp_valid_q <= 1'b0;
-
             if (err_rsp_valid_q && err_rsp_ready)
                 err_rsp_valid_q <= 1'b0;
-
-            if (mem_rsp_drop_fire && wr_pending_q) begin
-                wr_comp_valid_q <= 1'b1;
-                wr_pending_q <= 1'b0;
-            end
 
             if (state_timeout_en) begin
                 if (timeout_cnt_q != TIMEOUT_VALUE)
@@ -574,13 +612,23 @@ module chi_hn_f #(
 
             if (snp_rsp_fire)
                 snp_wait_mask_q <= snp_wait_mask_next;
+            if (snp_rsp_fire && snp_rsp_dirty)
+                snp_data_expected_q <= 1'b1;
 
             if (dat_line_beat_fire) begin
                 mem_line_q <= mem_line_next;
                 mem_beat_mask_q <= mem_beat_mask_next;
             end
 
-            if (snp_dat_valid && snp_dat_ready)
+            if (backinv_line_complete)
+                backinv_data_seen_q <= 1'b1;
+
+            if (snp_dat_beat_fire) begin
+                snp_line_q <= snp_line_next;
+                snp_beat_mask_q <= snp_beat_mask_next;
+            end
+
+            if (snp_line_complete)
                 snp_data_seen_q <= 1'b1;
 
             if (state_timeout_fire) begin
@@ -594,8 +642,11 @@ module chi_hn_f #(
                 snp_send_mask_q <= {NUM_RN{1'b0}};
                 snp_wait_mask_q <= {NUM_RN{1'b0}};
                 mem_beat_mask_q <= {BEATS{1'b0}};
+                snp_beat_mask_q <= {BEATS{1'b0}};
                 resp_beat_q <= 4'd0;
                 snp_data_seen_q <= 1'b0;
+                snp_data_expected_q <= 1'b0;
+                backinv_data_seen_q <= 1'b0;
                 timeout_cnt_q <= {TIMEOUT_W{1'b0}};
             end else begin
             case (state_q)
@@ -611,16 +662,23 @@ module chi_hn_f #(
                             backinv_sharer_vec_q <= backinv_sharer_vec;
                             mem_line_q <= {LINE_WIDTH{1'b0}};
                             mem_beat_mask_q <= {BEATS{1'b0}};
+                            snp_data_expected_q <= 1'b0;
+                            backinv_data_seen_q <= 1'b0;
                             snp_send_mask_q <= backinv_sharer_vec;
                             snp_wait_mask_q <= backinv_sharer_vec;
                             state_q <= HN_ST_BACKINV;
                         end else if (start_snoop) begin
                             snp_send_mask_q <= snp_valid_vec;
                             snp_wait_mask_q <= snp_valid_vec;
+                            snp_line_q <= {LINE_WIDTH{1'b0}};
+                            snp_beat_mask_q <= {BEATS{1'b0}};
                             snp_data_seen_q <= 1'b0;
+                            snp_data_expected_q <= 1'b0;
                             state_q <= HN_ST_WAIT_SNP;
                         end else if (start_snoop_data_ack) begin
-                            state_q <= HN_ST_WAIT_ACK;
+                            resp_line_q <= snp_line_q;
+                            resp_beat_q <= 4'd0;
+                            state_q <= HN_ST_SEND_DAT;
                         end else if (start_llc_read) begin
                             resp_line_q <= llc_data;
                             resp_beat_q <= 4'd0;
@@ -630,29 +688,28 @@ module chi_hn_f #(
                             mem_beat_mask_q <= {BEATS{1'b0}};
                             state_q <= HN_ST_WAIT_MEM;
                         end else begin
-                            if (start_write) begin
-                                wr_pending_q <= 1'b1;
-                                wr_txn_q <= req_txn_id;
-                                wr_src_q <= req_src_id;
-                                wr_qos_q <= req_qos;
-                            end
                             state_q <= HN_ST_IDLE;
                         end
                     end
                 end
 
                 HN_ST_BACKINV: begin
-                    if (snp_all_sent_next && snp_wait_done) begin
+                    if (snp_all_sent_next && snp_wait_done &&
+                        backinv_ready_for_exit) begin
                         snp_send_mask_q <= {NUM_RN{1'b0}};
                         snp_wait_mask_q <= {NUM_RN{1'b0}};
+                        snp_data_expected_q <= 1'b0;
+                        backinv_data_seen_q <= 1'b0;
                         state_q <= HN_ST_AFTER_BACKINV;
                     end
                 end
 
                 HN_ST_WAIT_SNP: begin
-                    if (snp_all_sent_next && snp_wait_done) begin
+                    if (snp_all_sent_next && snp_wait_done &&
+                        snp_ready_for_exit) begin
                         snp_send_mask_q <= {NUM_RN{1'b0}};
                         snp_wait_mask_q <= {NUM_RN{1'b0}};
+                        snp_data_expected_q <= 1'b0;
                         state_q <= HN_ST_AFTER_SNP;
                     end
                 end
@@ -838,6 +895,32 @@ module chi_hn_f #(
         .rsp_flit(resp_flit)
     );
 
+    chi_hn_write_tracker #(
+        .NODE_ID_W(NODE_ID_W),
+        .TXN_ID_W(TXN_ID_W),
+        .QOS_W(QOS_W),
+        .DEPTH(WR_TRACKER_DEPTH)
+    ) u_write_tracker (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(1'b0),
+        .alloc_valid(start_write),
+        .alloc_ready(wr_tracker_alloc_ready),
+        .alloc_txn_id(req_txn_id),
+        .alloc_src_id(req_src_id),
+        .alloc_qos(req_qos),
+        .comp_valid(wr_tracker_comp_valid),
+        .comp_ready(wr_tracker_comp_ready),
+        .comp_txn_id(rsp_txn_id),
+        .comp_match(wr_tracker_comp_match),
+        .rsp_valid(wr_tracker_rsp_valid),
+        .rsp_ready(wr_tracker_rsp_ready),
+        .rsp_txn_id(wr_tracker_rsp_txn_id),
+        .rsp_tgt_id(wr_tracker_rsp_tgt_id),
+        .rsp_qos(wr_tracker_rsp_qos),
+        .used_count(wr_tracker_used_unused)
+    );
+
     chi_link_layer #(
         .FLIT_W(RSP_W),
         .INIT_CREDIT(INIT_CRD)
@@ -902,8 +985,19 @@ module chi_hn_f #(
     always @(posedge clk) begin
         if (rstn) begin
             if (dat_sink_valid && !dat_data_id_ok &&
-                ((state_q == HN_ST_WAIT_MEM) || (state_q == HN_ST_BACKINV))) begin
+                ((state_q == HN_ST_WAIT_MEM) ||
+                 (state_q == HN_ST_BACKINV) ||
+                 (state_q == HN_ST_WAIT_SNP))) begin
                 $display("chi_hn_f invalid DAT DataID %0d", dat_data_id);
+                $stop;
+            end
+
+            if (dat_sink_valid && dat_data_id_ok && !dat_txn_match &&
+                ((state_q == HN_ST_WAIT_MEM) ||
+                 (state_q == HN_ST_BACKINV) ||
+                 (state_q == HN_ST_WAIT_SNP))) begin
+                $display("chi_hn_f unexpected DAT txn %0h while waiting txn %0h",
+                         dat_txn_id, req_txn_id);
                 $stop;
             end
 

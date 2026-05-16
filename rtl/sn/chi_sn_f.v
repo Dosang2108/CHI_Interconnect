@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_sn_f
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_sn_f #(
     parameter NODE_ID    = 3,
     parameter DATA_WIDTH = `CHI_DEFAULT_DATA_W,

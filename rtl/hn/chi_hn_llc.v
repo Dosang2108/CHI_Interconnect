@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_hn_llc
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_hn_llc #(
     parameter ADDR_WIDTH = `CHI_DEFAULT_ADDR_W,
     parameter DATA_WIDTH = `CHI_DEFAULT_DATA_W,
@@ -24,20 +28,10 @@ module chi_hn_llc #(
     input                    line_invalidate_valid,
     input      [ADDR_WIDTH-1:0] line_invalidate_addr
 );
-    function integer clog2;
-        input integer value;
-        integer i;
-        begin
-            value = value - 1;
-            for (i = 0; value > 0; i = i + 1)
-                value = value >> 1;
-            clog2 = i;
-        end
-    endfunction
-
+    `include "../common/chi_clog2.vh"
     localparam LINE_WIDTH = LINE_BYTES * 8;
-    localparam LINE_OFF_W = clog2(LINE_BYTES);
-    localparam INDEX_W = (LINES <= 2) ? 1 : clog2(LINES);
+    localparam LINE_OFF_W = `CHI_CLOG2(LINE_BYTES);
+    localparam INDEX_W = (LINES <= 2) ? 1 : `CHI_CLOG2(LINES);
     localparam TAG_W = ADDR_WIDTH - LINE_OFF_W - INDEX_W;
 
     wire [INDEX_W-1:0] lookup_index =

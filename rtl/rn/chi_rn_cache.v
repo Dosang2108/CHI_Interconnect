@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_rn_cache
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_rn_cache #(
     parameter ADDR_WIDTH = `CHI_DEFAULT_ADDR_W,
     parameter DATA_WIDTH = `CHI_DEFAULT_DATA_W,
@@ -26,19 +30,9 @@ module chi_rn_cache #(
 
     input                    snoop_commit
 );
-    function integer clog2;
-        input integer value;
-        integer i;
-        begin
-            value = value - 1;
-            for (i = 0; value > 0; i = i + 1)
-                value = value >> 1;
-            clog2 = i;
-        end
-    endfunction
-
+    `include "../common/chi_clog2.vh"
     localparam LINE_WIDTH = LINE_BYTES * 8;
-    localparam INDEX_W = (LINES <= 2) ? 1 : clog2(LINES);
+    localparam INDEX_W = (LINES <= 2) ? 1 : `CHI_CLOG2(LINES);
     localparam TAG_W = (ADDR_WIDTH > (INDEX_W + 6)) ? (ADDR_WIDTH - INDEX_W - 6) : 1;
 
     wire [INDEX_W-1:0] update_index = line_update_addr[6 +: INDEX_W];

@@ -1,12 +1,18 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_fabric
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_fabric #(
     parameter NUM_RN      = `CHI_DEFAULT_NUM_RN,
     parameter NUM_HN      = `CHI_DEFAULT_NUM_HN,
     parameter NUM_SN      = `CHI_DEFAULT_NUM_SN,
-    parameter NUM_NODES   = NUM_RN + NUM_HN + NUM_SN,
+    parameter NUM_MN      = `CHI_DEFAULT_NUM_MN,
+    parameter NUM_NODES   = NUM_RN + NUM_HN + NUM_SN + NUM_MN,
     parameter NUM_REQ_SRC = NUM_RN + NUM_HN,
-    parameter NUM_REQ_TGT = NUM_HN + NUM_SN,
+    parameter NUM_REQ_TGT = NUM_HN + NUM_SN + NUM_MN,
+    parameter NUM_SNP_SRC = NUM_HN + NUM_MN,
     parameter ADDR_WIDTH  = `CHI_DEFAULT_ADDR_W,
     parameter DATA_WIDTH  = `CHI_DEFAULT_DATA_W,
     parameter NODE_ID_W   = `CHI_DEFAULT_NODE_ID_W,
@@ -21,7 +27,7 @@ module chi_fabric #(
 
     input      [NUM_REQ_SRC*QOS_W-1:0] req_qos_flat,
     input      [NUM_NODES*QOS_W-1:0]   node_qos_flat,
-    input      [NUM_HN*QOS_W-1:0]      hn_qos_flat,
+    input      [NUM_SNP_SRC*QOS_W-1:0] snp_qos_flat,
 
     input      [NUM_REQ_SRC-1:0] req_in_valid,
     output     [NUM_REQ_SRC-1:0] req_in_ready,
@@ -41,11 +47,11 @@ module chi_fabric #(
     input      [NUM_NODES-1:0] rsp_out_ready,
     output     [NUM_NODES*`CHI_RSP_W(NODE_ID_W,TXN_ID_W,QOS_W,DBID_W)-1:0] rsp_out_flit,
 
-    input      [NUM_HN-1:0] snp_in_valid,
-    output     [NUM_HN-1:0] snp_in_ready,
-    input      [NUM_HN*`CHI_SNP_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W)-1:0] snp_in_flit,
-    output     [NUM_HN-1:0] snp_in_pop_pulse,
-    input      [NUM_HN*NUM_RN-1:0] snp_route_onehot,
+    input      [NUM_SNP_SRC-1:0] snp_in_valid,
+    output     [NUM_SNP_SRC-1:0] snp_in_ready,
+    input      [NUM_SNP_SRC*`CHI_SNP_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W)-1:0] snp_in_flit,
+    output     [NUM_SNP_SRC-1:0] snp_in_pop_pulse,
+    input      [NUM_SNP_SRC*NUM_RN-1:0] snp_route_onehot,
     output     [NUM_RN-1:0] snp_out_valid,
     input      [NUM_RN-1:0] snp_out_ready,
     output     [NUM_RN*`CHI_SNP_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W)-1:0] snp_out_flit,
@@ -107,7 +113,7 @@ module chi_fabric #(
     );
 
     chi_channel_slice #(
-        .NUM_IN(NUM_HN),
+        .NUM_IN(NUM_SNP_SRC),
         .NUM_OUT(NUM_RN),
         .FLIT_W(SNP_W),
         .QOS_W(QOS_W),
@@ -121,7 +127,7 @@ module chi_fabric #(
         .in_flit(snp_in_flit),
         .in_pop_pulse(snp_in_pop_pulse),
         .route_onehot_flat(snp_route_onehot),
-        .qos_flat(hn_qos_flat),
+        .qos_flat(snp_qos_flat),
         .out_valid(snp_out_valid),
         .out_ready(snp_out_ready),
         .out_flit(snp_out_flit)

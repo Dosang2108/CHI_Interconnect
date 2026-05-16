@@ -1,5 +1,9 @@
 `include "chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_link_layer
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_link_layer #(
     parameter FLIT_W      = 128,
     parameter CREDIT_W    = 4,

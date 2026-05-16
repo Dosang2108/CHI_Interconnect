@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_sn_axi_bridge
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_sn_axi_bridge #(
     parameter NODE_ID    = 0,
     parameter DATA_WIDTH = `CHI_DEFAULT_DATA_W,
@@ -54,17 +58,7 @@ module chi_sn_axi_bridge #(
     output                   axi_bready,
     input      [1:0]         axi_bresp
 );
-    function integer clog2;
-        input integer value;
-        integer i;
-        begin
-            value = value - 1;
-            for (i = 0; value > 0; i = i + 1)
-                value = value >> 1;
-            clog2 = i;
-        end
-    endfunction
-
+    `include "../common/chi_clog2.vh"
     localparam REQ_ADDR_LSB   = `CHI_REQ_ADDR_LSB;
     localparam REQ_SIZE_LSB   = `CHI_REQ_SIZE_LSB(ADDR_WIDTH);
     localparam REQ_OPCODE_LSB = `CHI_REQ_OPCODE_LSB(ADDR_WIDTH);
@@ -86,7 +80,7 @@ module chi_sn_axi_bridge #(
     localparam LINE_BYTES = 64;
     localparam BEATS = LINE_BYTES / BE_W;
     localparam [7:0] AXI_BURST_LEN = BEATS - 1;
-    localparam [2:0] AXI_SIZE = clog2(BE_W);
+    localparam [2:0] AXI_SIZE = `CHI_CLOG2(BE_W);
 
     localparam DAT_RESPERR_LSB = `CHI_DAT_RESPERR_LSB;
     localparam DAT_BE_LSB      = `CHI_DAT_BE_LSB;

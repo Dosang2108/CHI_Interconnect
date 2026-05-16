@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_hn_snoop_generator
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_hn_snoop_generator #(
     parameter ADDR_WIDTH = `CHI_DEFAULT_ADDR_W,
     parameter NUM_RN     = `CHI_DEFAULT_NUM_RN,

@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_rn_dat_rx
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_rn_dat_rx #(
     parameter DATA_WIDTH = `CHI_DEFAULT_DATA_W,
     parameter NODE_ID_W  = `CHI_DEFAULT_NODE_ID_W,
@@ -22,21 +26,11 @@ module chi_rn_dat_rx #(
     output                   line_valid,
     output     [LINE_BYTES*8-1:0] line_data
 );
-    function integer clog2;
-        input integer value;
-        integer i;
-        begin
-            value = value - 1;
-            for (i = 0; value > 0; i = i + 1)
-                value = value >> 1;
-            clog2 = i;
-        end
-    endfunction
-
+    `include "../common/chi_clog2.vh"
     localparam BE_W = DATA_WIDTH / 8;
     localparam LINE_WIDTH = LINE_BYTES * 8;
     localparam BEATS = LINE_BYTES / BE_W;
-    localparam ENTRY_W = (LINE_BUF_ENTRIES <= 2) ? 1 : clog2(LINE_BUF_ENTRIES);
+    localparam ENTRY_W = (LINE_BUF_ENTRIES <= 2) ? 1 : `CHI_CLOG2(LINE_BUF_ENTRIES);
 
     localparam DAT_RESPERR_LSB = `CHI_DAT_RESPERR_LSB;
     localparam DAT_BE_LSB      = `CHI_DAT_BE_LSB;
@@ -91,12 +85,12 @@ module chi_rn_dat_rx #(
             if (!match_valid && entry_valid_q[scan_i] &&
                 (entry_txn_id_q[scan_i] == flit_txn_id)) begin
                 match_valid = 1'b1;
-                match_idx = scan_i[ENTRY_W-1:0];
+                match_idx = scan_i;
             end
 
             if (!free_valid && !entry_valid_q[scan_i]) begin
                 free_valid = 1'b1;
-                free_idx = scan_i[ENTRY_W-1:0];
+                free_idx = scan_i;
             end
         end
     end
@@ -141,8 +135,6 @@ module chi_rn_dat_rx #(
         if (!rstn) begin
             for (reset_i = 0; reset_i < LINE_BUF_ENTRIES; reset_i = reset_i + 1) begin
                 entry_valid_q[reset_i] <= 1'b0;
-                entry_txn_id_q[reset_i] <= {TXN_ID_W{1'b0}};
-                entry_data_q[reset_i] <= {LINE_WIDTH{1'b0}};
                 entry_mask_q[reset_i] <= {BEATS{1'b0}};
             end
         end else if (rx_fire) begin

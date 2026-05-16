@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_output_arbiter
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_output_arbiter #(
     parameter NUM_IN       = `CHI_DEFAULT_NUM_RN,
     parameter QOS_W        = `CHI_DEFAULT_QOS_W,
@@ -12,25 +16,15 @@ module chi_output_arbiter #(
     input      [NUM_IN-1:0]  credit_ok,
     output reg [NUM_IN-1:0]  gnt_vec
 );
-    function integer clog2;
-        input integer value;
-        integer i;
-        begin
-            value = value - 1;
-            for (i = 0; value > 0; i = i + 1)
-                value = value >> 1;
-            clog2 = i;
-        end
-    endfunction
-
-    function [QOS_W-1:0] get_qos;
+    `include "../common/chi_clog2.vh"
+function [QOS_W-1:0] get_qos;
         input integer idx;
         begin
             get_qos = qos_flat[idx*QOS_W +: QOS_W];
         end
     endfunction
 
-    localparam PTR_W = (NUM_IN <= 2) ? 1 : clog2(NUM_IN);
+    localparam PTR_W = (NUM_IN <= 2) ? 1 : `CHI_CLOG2(NUM_IN);
     localparam [15:0] STARV_LIMIT = STARV_THRESH;
 
     reg [PTR_W-1:0] rr_ptr;

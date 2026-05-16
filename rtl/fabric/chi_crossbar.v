@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_crossbar
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_crossbar #(
     parameter NUM_IN  = `CHI_DEFAULT_NUM_RN,
     parameter NUM_OUT = `CHI_DEFAULT_NUM_TGT,

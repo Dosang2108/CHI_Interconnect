@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_rn_f
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_rn_f #(
     parameter NODE_ID    = 0,
     parameter DATA_WIDTH = `CHI_DEFAULT_DATA_W,
@@ -47,23 +51,14 @@ module chi_rn_f #(
     input      [`CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W)-1:0] rx_dat_flit,
     output                   rx_dat_lcrdv
 );
-    function integer clog2;
-        input integer value;
-        integer i;
-        begin
-            value = value - 1;
-            for (i = 0; value > 0; i = i + 1)
-                value = value >> 1;
-            clog2 = i;
-        end
-    endfunction
-
+    `include "../common/chi_clog2.vh"
     localparam REQ_W = `CHI_REQ_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W);
     localparam RSP_W = `CHI_RSP_W(NODE_ID_W,TXN_ID_W,QOS_W,DBID_W);
     localparam DAT_W = `CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W);
     localparam LINE_BYTES = 64;
     localparam LINE_WIDTH = LINE_BYTES * 8;
-    localparam TXN_IDX_W = (TXN_TBL_SIZE <= 2) ? 1 : clog2(TXN_TBL_SIZE);
+    localparam TXN_IDX_W = (TXN_TBL_SIZE <= 2) ? 1 : `CHI_CLOG2(TXN_TBL_SIZE);
+    localparam SNP_OPCODE_LSB = `CHI_SNP_OPCODE_LSB(ADDR_WIDTH);
     localparam RSP_RESP_LSB    = `CHI_RSP_RESP_LSB;
     localparam RSP_RESPERR_LSB = `CHI_RSP_RESPERR_LSB;
     localparam RSP_DBID_LSB    = `CHI_RSP_DBID_LSB;
@@ -87,6 +82,8 @@ module chi_rn_f #(
     wire [REQ_W-1:0]     req_engine_flit;
     wire                 req_engine_valid;
     wire                 req_engine_ready;
+    wire                 req_engine_cpu_ready;
+    wire                 cpu_req_valid_to_engine;
 
     wire                 rsp_comp_valid;
     wire                 rsp_dbid_valid;
@@ -143,6 +140,8 @@ module chi_rn_f #(
     reg [LINE_BYTES-1:0] wstrb_line_mem [0:TXN_TBL_SIZE-1];
     reg [ADDR_WIDTH-1:0] txn_addr_mem [0:TXN_TBL_SIZE-1];
     reg [5:0]            txn_opcode_mem [0:TXN_TBL_SIZE-1];
+    reg [TXN_TBL_SIZE-1:0] txn_ldrex_mem;
+    reg [TXN_TBL_SIZE-1:0] txn_strex_mem;
     reg [TXN_TBL_SIZE-1:0] wdata_valid_mem;
     reg                  pending_wdat_valid_q;
     reg [TXN_ID_W-1:0]   pending_wdat_txn_q;
@@ -154,7 +153,6 @@ module chi_rn_f #(
     reg [TXN_ID_W-1:0]   compack_txn_q;
     reg [NODE_ID_W-1:0]  compack_tgt_q;
     reg [RSP_W-1:0]      compack_rsp_flit;
-    integer              wdata_idx;
 
     wire                 cache_update_valid;
     wire [ADDR_WIDTH-1:0] cache_update_addr;
@@ -172,6 +170,20 @@ module chi_rn_f #(
     wire                 cache_write_update;
     wire                 cache_read_fill_update;
     wire                 cache_read_fill_uq;
+    wire                 cpu_req_is_ldrex;
+    wire                 cpu_req_is_strex;
+    wire                 strex_pass;
+    wire                 strex_fail;
+    wire                 strex_fail_fire;
+    wire                 strex_commit;
+    wire                 ldrex_complete;
+    wire                 exclusive_snoop_clear;
+    wire                 dvm_reservation_clear;
+    wire                 reservation_valid_unused;
+    wire [5:0]           rx_snp_opcode;
+    wire                 normal_cpu_resp_valid;
+    wire                 exclusive_success_resp;
+    reg                  strex_fail_resp_q;
 
     wire                 snoop_dat_valid;
     wire                 snoop_dat_ready;
@@ -182,12 +194,23 @@ module chi_rn_f #(
 
     assign node_id_wire = NODE_ID;
     assign qos_value    = {QOS_W{1'b0}};
-    assign cpu_rdata    = dat_line_valid_unused ?
-                          dat_line_cpu_data :
-                          dat_data;
-    assign cpu_resp_valid = ((rsp_comp_valid || timeout_valid) &&
-                             selected_complete_match_valid) ||
-                            (dat_line_valid_unused && dat_txn_match);
+    assign cpu_req_is_ldrex = (cpu_req_op == `CHI_CPU_OP_LDREX);
+    assign cpu_req_is_strex = (cpu_req_op == `CHI_CPU_OP_STREX);
+    assign strex_fail = cpu_req_valid && cpu_req_is_strex && !strex_pass;
+    assign strex_fail_fire = strex_fail;
+    assign cpu_req_valid_to_engine = cpu_req_valid && !strex_fail;
+    assign cpu_req_ready = strex_fail ? 1'b1 : req_engine_cpu_ready;
+    assign normal_cpu_resp_valid = ((rsp_comp_valid || timeout_valid) &&
+                                    selected_complete_match_valid) ||
+                                   (dat_line_valid_unused && dat_txn_match);
+    assign exclusive_success_resp = selected_complete_match_valid &&
+                                    txn_strex_mem[selected_complete_txn_id[TXN_IDX_W-1:0]] &&
+                                    !timeout_valid;
+    assign cpu_rdata = strex_fail_resp_q ? {DATA_WIDTH{1'b0}} :
+                       (exclusive_success_resp ?
+                        {{(DATA_WIDTH-1){1'b0}}, 1'b1} :
+                        (dat_line_valid_unused ? dat_line_cpu_data : dat_data));
+    assign cpu_resp_valid = strex_fail_resp_q || normal_cpu_resp_valid;
     assign selected_complete_valid = rsp_comp_valid ||
                                      dat_line_valid_unused ||
                                      timeout_valid;
@@ -222,6 +245,18 @@ module chi_rn_f #(
     assign tx_rsp_link_flit = snoop_rsp_valid ? snoop_rsp_flit : compack_rsp_flit;
     assign snoop_rsp_ready = tx_rsp_link_ready;
     assign compack_rsp_ready = tx_rsp_link_ready && !snoop_rsp_valid;
+    assign rx_snp_opcode = rx_snp_flit[SNP_OPCODE_LSB +: 6];
+    assign strex_commit = txn_alloc_valid && cpu_req_is_strex;
+    assign ldrex_complete = dat_line_valid_unused &&
+                            dat_txn_match &&
+                            txn_ldrex_mem[dat_txn_idx] &&
+                            (dat_resp_err == `CHI_RESPERR_OK);
+    assign exclusive_snoop_clear = cache_snoop_commit &&
+                                   ((cache_snoop_opcode == `CHI_SNP_UNIQUE) ||
+                                    (cache_snoop_opcode == `CHI_SNP_INVALID));
+    assign dvm_reservation_clear = rx_snp_lcrdv &&
+                                   ((rx_snp_opcode == `CHI_SNP_DVM_OP) ||
+                                    (rx_snp_opcode == `CHI_SNP_DVM_SYNC));
 
     always @(*) begin
         compack_rsp_flit = {RSP_W{1'b0}};
@@ -264,6 +299,13 @@ module chi_rn_f #(
     ) u_addr_decoder (
         .valid(cpu_req_valid),
         .addr(cpu_req_addr),
+        .cfg_region_valid(1'b0),
+        .cfg_hnf_base({ADDR_WIDTH{1'b0}}),
+        .cfg_hnf_end({ADDR_WIDTH{1'b0}}),
+        .cfg_snf_base({ADDR_WIDTH{1'b0}}),
+        .cfg_snf_end({ADDR_WIDTH{1'b0}}),
+        .cfg_mn_base({ADDR_WIDTH{1'b0}}),
+        .cfg_mn_end({ADDR_WIDTH{1'b0}}),
         .tgt_id(target_id),
         .tgt_onehot(route_onehot_unused),
         .decode_error(route_error_unused)
@@ -272,7 +314,6 @@ module chi_rn_f #(
     chi_rn_txn_tracker #(
         .TXN_ID_W(TXN_ID_W),
         .ADDR_WIDTH(ADDR_WIDTH),
-        .DBID_W(DBID_W),
         .TXN_TBL_SIZE(TXN_TBL_SIZE)
     ) u_txn_tracker (
         .clk(clk),
@@ -281,11 +322,8 @@ module chi_rn_f #(
         .alloc_valid(txn_alloc_valid),
         .alloc_ready(txn_alloc_ready),
         .alloc_txn_id(txn_alloc_id),
-        .alloc_opcode(req_opcode),
-        .alloc_addr(cpu_req_addr),
         .dbid_update_valid(rsp_dbid_valid),
         .dbid_update_txn_id(rsp_txn_id),
-        .dbid_update_value(rsp_dbid),
         .dbid_match_valid(rsp_dbid_match_valid),
         .complete_valid(selected_complete_valid),
         .complete_txn_id(selected_complete_txn_id),
@@ -305,8 +343,8 @@ module chi_rn_f #(
         .TXN_ID_W(TXN_ID_W),
         .QOS_W(QOS_W)
     ) u_req_engine (
-        .cpu_req_valid(cpu_req_valid),
-        .cpu_req_ready(cpu_req_ready),
+        .cpu_req_valid(cpu_req_valid_to_engine),
+        .cpu_req_ready(req_engine_cpu_ready),
         .cpu_req_addr(cpu_req_addr),
         .cpu_req_op(cpu_req_op),
         .cpu_req_size(cpu_req_size),
@@ -320,6 +358,25 @@ module chi_rn_f #(
         .tx_req_ready(req_engine_ready),
         .tx_req_flit(req_engine_flit),
         .tx_req_opcode(req_opcode)
+    );
+
+    chi_exclusive_monitor #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .LINE_LSB(6)
+    ) u_exclusive_monitor (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(1'b0),
+        .ldrex_complete(ldrex_complete),
+        .ldrex_addr(txn_addr_mem[dat_txn_idx]),
+        .strex_check_valid(cpu_req_valid && cpu_req_is_strex),
+        .strex_addr(cpu_req_addr),
+        .strex_pass(strex_pass),
+        .strex_commit(strex_commit),
+        .clear_addr_valid(exclusive_snoop_clear),
+        .clear_addr(cache_snoop_addr),
+        .clear_all(dvm_reservation_clear || (txn_alloc_valid && txn_alloc_is_write)),
+        .reservation_valid(reservation_valid_unused)
     );
 
     chi_link_layer #(
@@ -513,6 +570,8 @@ module chi_rn_f #(
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             wdata_valid_mem      <= {TXN_TBL_SIZE{1'b0}};
+            txn_ldrex_mem        <= {TXN_TBL_SIZE{1'b0}};
+            txn_strex_mem        <= {TXN_TBL_SIZE{1'b0}};
             pending_wdat_valid_q <= 1'b0;
             pending_wdat_txn_q   <= {TXN_ID_W{1'b0}};
             pending_wdat_dbid_q  <= {DBID_W{1'b0}};
@@ -522,13 +581,10 @@ module chi_rn_f #(
             compack_valid_q      <= 1'b0;
             compack_txn_q        <= {TXN_ID_W{1'b0}};
             compack_tgt_q        <= {NODE_ID_W{1'b0}};
-            for (wdata_idx = 0; wdata_idx < TXN_TBL_SIZE; wdata_idx = wdata_idx + 1) begin
-                wdata_line_mem[wdata_idx] <= {LINE_WIDTH{1'b0}};
-                wstrb_line_mem[wdata_idx] <= {LINE_BYTES{1'b0}};
-                txn_addr_mem[wdata_idx] <= {ADDR_WIDTH{1'b0}};
-                txn_opcode_mem[wdata_idx] <= 6'd0;
-            end
+            strex_fail_resp_q    <= 1'b0;
         end else begin
+            strex_fail_resp_q <= strex_fail_fire;
+
             if (wdat_accept)
                 pending_wdat_valid_q <= 1'b0;
 
@@ -544,6 +600,8 @@ module chi_rn_f #(
             if (txn_alloc_valid) begin
                 txn_addr_mem[txn_alloc_idx] <= cpu_req_addr;
                 txn_opcode_mem[txn_alloc_idx] <= req_opcode;
+                txn_ldrex_mem[txn_alloc_idx] <= cpu_req_is_ldrex;
+                txn_strex_mem[txn_alloc_idx] <= cpu_req_is_strex;
 
                 if (txn_alloc_is_write) begin
                     wdata_line_mem[txn_alloc_idx] <= cpu_wdata_line;
@@ -556,6 +614,8 @@ module chi_rn_f #(
 
             if (selected_complete_match_valid) begin
                 wdata_valid_mem[selected_complete_txn_id[TXN_IDX_W-1:0]] <= 1'b0;
+                txn_ldrex_mem[selected_complete_txn_id[TXN_IDX_W-1:0]] <= 1'b0;
+                txn_strex_mem[selected_complete_txn_id[TXN_IDX_W-1:0]] <= 1'b0;
                 if (pending_wdat_valid_q &&
                     (pending_wdat_txn_q == selected_complete_txn_id))
                     pending_wdat_valid_q <= 1'b0;

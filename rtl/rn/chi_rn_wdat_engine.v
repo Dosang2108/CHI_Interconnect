@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_rn_wdat_engine
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_rn_wdat_engine #(
     parameter DATA_WIDTH = `CHI_DEFAULT_DATA_W,
     parameter NODE_ID_W  = `CHI_DEFAULT_NODE_ID_W,

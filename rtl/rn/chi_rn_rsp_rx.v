@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_rn_rsp_rx
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_rn_rsp_rx #(
     parameter NODE_ID_W = `CHI_DEFAULT_NODE_ID_W,
     parameter TXN_ID_W  = `CHI_DEFAULT_TXN_ID_W,
@@ -41,7 +45,8 @@ module chi_rn_rsp_rx #(
     assign rsp_resp_err = rsp_flit_buf[RSP_RESPERR_LSB +: 2];
     assign comp_valid   = rsp_valid_buf && rsp_ready &&
                           ((rsp_opcode == `CHI_RSP_COMP) ||
-                           (rsp_opcode == `CHI_RSP_COMP_DBID));
+                           (rsp_opcode == `CHI_RSP_COMP_DBID) ||
+                           (rsp_opcode == `CHI_RSP_DVM_COMPLETE));
     assign dbid_valid   = rsp_valid_buf && rsp_ready &&
                           ((rsp_opcode == `CHI_RSP_DBID) ||
                            (rsp_opcode == `CHI_RSP_COMP_DBID));

@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_sn_wdata_buf
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_sn_wdata_buf #(
     parameter FLIT_W = 128,
     parameter DEPTH  = 8

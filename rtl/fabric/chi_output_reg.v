@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_output_reg
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_output_reg #(
     parameter FLIT_W = 128
 )(

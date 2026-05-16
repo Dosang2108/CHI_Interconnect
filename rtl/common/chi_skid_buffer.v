@@ -1,5 +1,9 @@
 `include "chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_skid_buffer
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_skid_buffer #(
     parameter WIDTH = 128
 )(

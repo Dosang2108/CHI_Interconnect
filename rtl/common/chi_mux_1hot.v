@@ -1,5 +1,9 @@
 `include "chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_mux_1hot
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_mux_1hot #(
     parameter WIDTH = 128,
     parameter N     = 2

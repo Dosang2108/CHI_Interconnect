@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_rn_req_engine
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_rn_req_engine #(
     parameter ADDR_WIDTH = `CHI_DEFAULT_ADDR_W,
     parameter NODE_ID_W  = `CHI_DEFAULT_NODE_ID_W,
@@ -31,6 +35,13 @@ module chi_rn_req_engine #(
     localparam REQ_SRC_LSB    = `CHI_REQ_SRC_LSB(ADDR_WIDTH,TXN_ID_W);
     localparam REQ_TGT_LSB    = `CHI_REQ_TGT_LSB(ADDR_WIDTH,TXN_ID_W,NODE_ID_W);
     localparam REQ_QOS_LSB    = `CHI_REQ_QOS_LSB(ADDR_WIDTH,TXN_ID_W,NODE_ID_W);
+    localparam REQ_EXCL_LSB   = `CHI_REQ_EXCL_LSB(ADDR_WIDTH,TXN_ID_W,NODE_ID_W,QOS_W);
+    localparam REQ_ORDER_LSB  = `CHI_REQ_ORDER_LSB(ADDR_WIDTH,TXN_ID_W,NODE_ID_W,QOS_W);
+
+    wire cpu_req_exclusive = (cpu_req_op == `CHI_CPU_OP_LDREX) ||
+                             (cpu_req_op == `CHI_CPU_OP_STREX);
+    wire cpu_req_dvm = (cpu_req_op == `CHI_CPU_OP_DVM_OP) ||
+                       (cpu_req_op == `CHI_CPU_OP_DVM_SYNC);
 
     assign cpu_req_ready   = tx_req_ready && txn_alloc_ready;
     assign tx_req_valid    = cpu_req_valid && txn_alloc_ready;
@@ -38,11 +49,15 @@ module chi_rn_req_engine #(
 
     always @(*) begin
         case (cpu_req_op)
-            4'd0: tx_req_opcode = `CHI_REQ_RD_SHARED;
-            4'd1: tx_req_opcode = `CHI_REQ_RD_UNIQUE;
-            4'd2: tx_req_opcode = `CHI_REQ_EVICT;
-            4'd3: tx_req_opcode = `CHI_REQ_WB_FULL;
-            4'd4: tx_req_opcode = `CHI_REQ_MK_UNIQUE;
+            `CHI_CPU_OP_RD_SHARED: tx_req_opcode = `CHI_REQ_RD_SHARED;
+            `CHI_CPU_OP_RD_UNIQUE: tx_req_opcode = `CHI_REQ_RD_UNIQUE;
+            `CHI_CPU_OP_EVICT:     tx_req_opcode = `CHI_REQ_EVICT;
+            `CHI_CPU_OP_WB_FULL:   tx_req_opcode = `CHI_REQ_WB_FULL;
+            `CHI_CPU_OP_MK_UNIQUE: tx_req_opcode = `CHI_REQ_MK_UNIQUE;
+            `CHI_CPU_OP_LDREX:     tx_req_opcode = `CHI_REQ_RD_UNIQUE;
+            `CHI_CPU_OP_STREX:     tx_req_opcode = `CHI_REQ_WR_UNIQUE;
+            `CHI_CPU_OP_DVM_OP:    tx_req_opcode = `CHI_REQ_DVM_OP;
+            `CHI_CPU_OP_DVM_SYNC:  tx_req_opcode = `CHI_REQ_DVM_SYNC;
             default: tx_req_opcode = `CHI_REQ_RD_ONCE;
         endcase
 
@@ -54,5 +69,7 @@ module chi_rn_req_engine #(
         tx_req_flit[REQ_SRC_LSB +: NODE_ID_W]    = node_id;
         tx_req_flit[REQ_TGT_LSB +: NODE_ID_W]    = target_id;
         tx_req_flit[REQ_QOS_LSB +: QOS_W]        = qos_value;
+        tx_req_flit[REQ_EXCL_LSB]                = cpu_req_exclusive;
+        tx_req_flit[REQ_ORDER_LSB +: 2]          = cpu_req_dvm ? 2'b11 : 2'b00;
     end
 endmodule

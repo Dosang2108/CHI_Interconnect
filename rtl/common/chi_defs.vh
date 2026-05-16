@@ -1,3 +1,5 @@
+`timescale 1ns/1ps
+
 `ifndef CHI_DEFS_VH
 `define CHI_DEFS_VH
 
@@ -5,6 +7,7 @@
 `define CHI_DEFAULT_NUM_RN       2
 `define CHI_DEFAULT_NUM_HN       3
 `define CHI_DEFAULT_NUM_SN       1
+`define CHI_DEFAULT_NUM_MN       1
 `define CHI_DEFAULT_NUM_TGT      4
 `define CHI_DEFAULT_ADDR_W       44
 `define CHI_DEFAULT_DATA_W       128
@@ -15,6 +18,17 @@
 `define CHI_DEFAULT_INIT_CRD     8
 `define CHI_DEFAULT_FIFO_DEPTH   8
 `define CHI_DEFAULT_STARV_THRESH 256
+
+// CPU-side operation map used by the simple RN-F ingress.
+`define CHI_CPU_OP_RD_SHARED     4'd0
+`define CHI_CPU_OP_RD_UNIQUE     4'd1
+`define CHI_CPU_OP_EVICT         4'd2
+`define CHI_CPU_OP_WB_FULL       4'd3
+`define CHI_CPU_OP_MK_UNIQUE     4'd4
+`define CHI_CPU_OP_LDREX         4'd5
+`define CHI_CPU_OP_STREX         4'd6
+`define CHI_CPU_OP_DVM_OP        4'd7
+`define CHI_CPU_OP_DVM_SYNC      4'd8
 
 // Channel identifiers.
 `define CHI_CH_REQ 2'd0
@@ -34,6 +48,8 @@
 `define CHI_REQ_WB_PTL        6'h19
 `define CHI_REQ_WR_UNIQUE     6'h1A
 `define CHI_REQ_WR_NO_SNP     6'h1C
+`define CHI_REQ_DVM_OP        6'h30
+`define CHI_REQ_DVM_SYNC      6'h31
 
 // RSP opcodes.
 `define CHI_RSP_DBID          4'h1
@@ -41,11 +57,19 @@
 `define CHI_RSP_COMP_ACK      4'h3
 `define CHI_RSP_COMP          4'h4
 `define CHI_RSP_COMP_DBID     4'h5
+`define CHI_RSP_DVM_COMPLETE  4'h6
 
 // SNP opcodes used by this first-pass skeleton.
 `define CHI_SNP_SHARED        6'h01
 `define CHI_SNP_UNIQUE        6'h02
 `define CHI_SNP_INVALID       6'h03
+`define CHI_SNP_DVM_OP        6'h30
+`define CHI_SNP_DVM_SYNC      6'h31
+
+// Simplified response bits.
+`define CHI_RESP_HIT_BIT      0
+`define CHI_RESP_DIRTY_BIT    1
+`define CHI_RESP_DVM_ACK      3'd4
 
 // Response error encoding.
 `define CHI_RESPERR_OK        2'b00

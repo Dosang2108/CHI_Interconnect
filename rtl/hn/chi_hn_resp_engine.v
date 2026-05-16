@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_hn_resp_engine
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_hn_resp_engine #(
     parameter NODE_ID   = 0,
     parameter NODE_ID_W = `CHI_DEFAULT_NODE_ID_W,

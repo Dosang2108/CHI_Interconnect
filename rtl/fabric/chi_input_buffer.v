@@ -1,5 +1,9 @@
-`include "chi_defs.vh"
+`include "../common/chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_input_buffer
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_input_buffer #(
     parameter FLIT_W = 128,
     parameter DEPTH  = `CHI_DEFAULT_FIFO_DEPTH

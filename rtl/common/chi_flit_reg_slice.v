@@ -1,5 +1,9 @@
 `include "chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_flit_reg_slice
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_flit_reg_slice #(
     parameter WIDTH = 128
 )(

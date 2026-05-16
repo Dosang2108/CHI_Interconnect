@@ -1,5 +1,9 @@
 `include "chi_defs.vh"
 
+// -----------------------------------------------------------------------------
+// Module: chi_credit_counter
+// Purpose: CHI interconnect RTL block.
+// -----------------------------------------------------------------------------
 module chi_credit_counter #(
     parameter CREDIT_W    = 4,
     parameter INIT_CREDIT = `CHI_DEFAULT_INIT_CRD,
