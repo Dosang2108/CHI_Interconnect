@@ -30,6 +30,11 @@ module chi_hn_write_tracker #(
     input      [1:0]         alloc_resp_err,
     input      [ADDR_WIDTH-1:0] alloc_addr,
     input      [NODE_ID_W-1:0] alloc_mem_tgt_id,
+    // CopyBack: the requester already has CompDBIDResp, so the SN Comp
+    // only frees the entry.
+    input                    alloc_copyback,
+    // A stale CopyBack: its beats go to the SN with BE=0.
+    input                    alloc_discard,
     output     [DBID_W-1:0]  alloc_dbid,
     output     [TXN_ID_W-1:0] alloc_mem_txn_id,
 
@@ -38,6 +43,10 @@ module chi_hn_write_tracker #(
     input      [TXN_ID_W-1:0] comp_txn_id,
     input      [NODE_ID_W-1:0] comp_src_id,
     output                   comp_match,
+    // DBIDResp from the SN for this entry's memory write.
+    input                    sn_dbid_valid,
+    input      [DBID_W-1:0]  sn_dbid,
+    output                   sn_dbid_match,
 
     input      [DBID_W-1:0]  wdat_dbid,
     input      [NODE_ID_W-1:0] wdat_src_id,
@@ -45,6 +54,25 @@ module chi_hn_write_tracker #(
     output                   wdat_match,
     output     [TXN_ID_W-1:0] wdat_mem_txn_id,
     output     [NODE_ID_W-1:0] wdat_mem_tgt_id,
+    // The matched write's SN has sent its DBIDResp: data may go.
+    output                   wdat_sn_ready,
+    // The SN's DBID for the matched write (TxnID of its WriteData to the
+    // SN) and whether its data is discarded.
+    output     [DBID_W-1:0]  wdat_sn_dbid,
+    output                   wdat_discard,
+
+    // DBIDResp / CompDBIDResp to the requester. It is sent only once the
+    // SN has given its DBID, so the requester's WriteData can always be
+    // forwarded when it reaches the home (it never waits in the shared
+    // DAT sink for an SN that is itself waiting).
+    output                   dbid_rsp_valid,
+    input                    dbid_rsp_ready,
+    output     [TXN_ID_W-1:0] dbid_rsp_txn_id,
+    output     [NODE_ID_W-1:0] dbid_rsp_tgt_id,
+    output     [QOS_W-1:0]   dbid_rsp_qos,
+    output     [DBID_W-1:0]  dbid_rsp_dbid,
+    output     [1:0]         dbid_rsp_resp_err,
+    output                   dbid_rsp_copyback,
 
     output                   rsp_valid,
     input                    rsp_ready,
@@ -71,6 +99,13 @@ module chi_hn_write_tracker #(
     reg [DBID_W-1:0]    dbid_q [0:DEPTH-1];
     reg [TXN_ID_W-1:0]  mem_txn_id_q [0:DEPTH-1];
     reg [NODE_ID_W-1:0] mem_tgt_id_q [0:DEPTH-1];
+    reg                 copyback_q [0:DEPTH-1];
+    reg                 sn_dbid_q [0:DEPTH-1];
+    reg [DBID_W-1:0]    sn_dbid_val_q [0:DEPTH-1];
+    reg                 discard_q [0:DEPTH-1];
+    reg                 rn_dbid_pend_q [0:DEPTH-1];
+    reg                 dbid_sel_valid_r;
+    reg [IDX_W-1:0]     dbid_sel_r;
 
     reg                 rsp_valid_q;
     reg [TXN_ID_W-1:0]  rsp_txn_id_q;
@@ -102,9 +137,25 @@ module chi_hn_write_tracker #(
 
     assign alloc_ready = free_valid_r;
     assign alloc_dbid = {HN_BANK_ID_SIZED, slot_dbid};
-    assign alloc_mem_txn_id = free_idx_txn + {{(TXN_ID_W-1){1'b0}}, 1'b1};
+    // HN->SN TxnIDs are tagged by class in the top two bits so reads,
+    // writes and LLC evictions can never reuse an outstanding TxnID at the
+    // SN (B2.5.1): 2'b01 read tracker, 2'b10 write tracker, all-ones evict.
+    assign alloc_mem_txn_id = {2'b10, free_idx_txn[TXN_ID_W-3:0]};
     assign comp_match = match_valid_r;
-    assign comp_ready = match_valid_r && (!rsp_valid_q || rsp_ready);
+    assign comp_ready = match_valid_r &&
+                        (copyback_q[match_idx_r] || !rsp_valid_q || rsp_ready);
+    assign sn_dbid_match = match_valid_r;
+    assign wdat_sn_ready = wdat_match_r && sn_dbid_q[wdat_idx_r];
+    assign wdat_sn_dbid = sn_dbid_val_q[wdat_idx_r];
+    assign wdat_discard = wdat_match_r && discard_q[wdat_idx_r];
+    assign dbid_rsp_valid = dbid_sel_valid_r;
+    assign dbid_rsp_txn_id = txn_id_q[dbid_sel_r];
+    assign dbid_rsp_tgt_id = src_id_q[dbid_sel_r];
+    assign dbid_rsp_qos = qos_q[dbid_sel_r];
+    assign dbid_rsp_dbid = dbid_q[dbid_sel_r];
+    assign dbid_rsp_resp_err = resp_err_q[dbid_sel_r];
+    assign dbid_rsp_copyback = copyback_q[dbid_sel_r];
+    wire dbid_rsp_fire = dbid_rsp_valid && dbid_rsp_ready;
     assign wdat_match = wdat_match_r;
     assign wdat_mem_txn_id = wdat_match_r ?
                              mem_txn_id_q[wdat_idx_r] : {TXN_ID_W{1'b0}};
@@ -131,11 +182,17 @@ module chi_hn_write_tracker #(
         match_idx_r = {IDX_W{1'b0}};
         wdat_match_r = 1'b0;
         wdat_idx_r = {IDX_W{1'b0}};
+        dbid_sel_valid_r = 1'b0;
+        dbid_sel_r = {IDX_W{1'b0}};
         used_count_r = 16'd0;
 
         for (scan_i = 0; scan_i < DEPTH; scan_i = scan_i + 1) begin
             if (valid_q[scan_i]) begin
                 used_count_r = used_count_r + 1'b1;
+                if (!dbid_sel_valid_r && rn_dbid_pend_q[scan_i]) begin
+                    dbid_sel_valid_r = 1'b1;
+                    dbid_sel_r = scan_i[IDX_W-1:0];
+                end
                 if (!match_valid_r &&
                     (mem_txn_id_q[scan_i] == comp_txn_id) &&
                     (mem_tgt_id_q[scan_i] == comp_src_id)) begin
@@ -143,10 +200,11 @@ module chi_hn_write_tracker #(
                     match_idx_r = scan_i[IDX_W-1:0];
                 end
 
+                // WriteData carries the DBID it was given as its TxnID.
                 if (!wdat_match_r &&
                     (dbid_q[scan_i] == wdat_dbid) &&
                     (src_id_q[scan_i] == wdat_src_id) &&
-                    (txn_id_q[scan_i] == wdat_txn_id)) begin
+                    (wdat_txn_id == dbid_q[scan_i])) begin
                     wdat_match_r = 1'b1;
                     wdat_idx_r = scan_i[IDX_W-1:0];
                 end
@@ -167,7 +225,11 @@ module chi_hn_write_tracker #(
             dbid_q[free_idx_r] <= alloc_dbid;
             mem_txn_id_q[free_idx_r] <= alloc_mem_txn_id;
             mem_tgt_id_q[free_idx_r] <= alloc_mem_tgt_id;
+            copyback_q[free_idx_r] <= alloc_copyback;
+            discard_q[free_idx_r] <= alloc_discard;
         end
+        if (rstn && !clear && sn_dbid_valid && match_valid_r)
+            sn_dbid_val_q[match_idx_r] <= sn_dbid;
     end
 
     always @(posedge clk or negedge rstn) begin
@@ -180,19 +242,32 @@ module chi_hn_write_tracker #(
             rsp_idx_q <= {IDX_W{1'b0}};
             for (reset_i = 0; reset_i < DEPTH; reset_i = reset_i + 1) begin
                 valid_q[reset_i] <= 1'b0;
+                sn_dbid_q[reset_i] <= 1'b0;
+                rn_dbid_pend_q[reset_i] <= 1'b0;
             end
         end else if (clear) begin
             rsp_valid_q <= 1'b0;
-            for (reset_i = 0; reset_i < DEPTH; reset_i = reset_i + 1)
+            for (reset_i = 0; reset_i < DEPTH; reset_i = reset_i + 1) begin
                 valid_q[reset_i] <= 1'b0;
+                rn_dbid_pend_q[reset_i] <= 1'b0;
+            end
         end else begin
             if (rsp_fire) begin
                 valid_q[rsp_idx_q] <= 1'b0;
-                if (!comp_fire)
+                if (!(comp_fire && !copyback_q[match_idx_r]))
                     rsp_valid_q <= 1'b0;
             end
 
-            if (comp_fire) begin
+            if (sn_dbid_valid && match_valid_r) begin
+                sn_dbid_q[match_idx_r] <= 1'b1;
+                rn_dbid_pend_q[match_idx_r] <= 1'b1;
+            end
+            if (dbid_rsp_fire)
+                rn_dbid_pend_q[dbid_sel_r] <= 1'b0;
+
+            if (comp_fire && copyback_q[match_idx_r]) begin
+                valid_q[match_idx_r] <= 1'b0;
+            end else if (comp_fire) begin
                 rsp_valid_q <= 1'b1;
                 rsp_idx_q <= match_idx_r;
                 rsp_txn_id_q <= txn_id_q[match_idx_r];
@@ -203,6 +278,8 @@ module chi_hn_write_tracker #(
 
             if (alloc_fire) begin
                 valid_q[free_idx_r] <= 1'b1;
+                sn_dbid_q[free_idx_r] <= 1'b0;
+                rn_dbid_pend_q[free_idx_r] <= 1'b0;
             end
         end
     end

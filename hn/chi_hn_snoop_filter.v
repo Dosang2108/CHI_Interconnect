@@ -12,6 +12,7 @@ module chi_hn_snoop_filter #(
 )(
     input                    clk,
     input                    rstn,
+    output                   busy,
     input                    clear,
 
     input                    lookup_valid,
@@ -28,6 +29,9 @@ module chi_hn_snoop_filter #(
     input      [1:0]         update_state,
     input      [NUM_RN-1:0]  update_sharer_vec,
     input                    update_invalidate,
+    // 1: OR update_sharer_vec into the sharers already recorded on a hit
+    //    (shared-read completion). 0: replace the sharer vector.
+    input                    update_merge,
 
     output                   backinv_valid,
     output     [ADDR_WIDTH-1:0] backinv_addr,
@@ -58,6 +62,7 @@ module chi_hn_snoop_filter #(
     reg [1:0]            op_update_state_q;
     reg [NUM_RN-1:0]     op_update_sharer_vec_q;
     reg                  op_update_invalidate_q;
+    reg                  op_update_merge_q;
 
     wire                 update_fire = update_valid && update_ready;
     wire                 lookup_fire = lookup_valid && lookup_ready;
@@ -82,6 +87,7 @@ module chi_hn_snoop_filter #(
     reg [NUM_RN-1:0]     op_hit_sharer_vec_r;
     reg [TAG_W-1:0]      op_victim_tag_r;
     reg [NUM_RN-1:0]     op_victim_sharer_vec_r;
+    wire [NUM_RN-1:0]    op_update_sharer_eff;
 
     reg                  result_valid_q;
     reg                  result_hit_q;
@@ -96,6 +102,13 @@ module chi_hn_snoop_filter #(
     integer scan_i;
     integer set_i;
     genvar  way_g;
+
+    // A merge update keeps sharers already recorded for the line, so a
+    // second ReadShared cannot drop the earlier sharer from the directory.
+    assign op_update_sharer_eff =
+        (op_update_merge_q && op_hit_r) ?
+        (op_hit_sharer_vec_r | op_update_sharer_vec_q) :
+        op_update_sharer_vec_q;
 
     assign update_ready = !op_busy;
     assign lookup_ready = !op_busy && !update_valid;
@@ -166,7 +179,7 @@ module chi_hn_snoop_filter #(
                         meta_mem[op_set_q] <= {
                             op_tag_q,
                             op_update_state_q,
-                            op_update_sharer_vec_q
+                            op_update_sharer_eff
                         };
                     end
                 end
@@ -192,7 +205,7 @@ module chi_hn_snoop_filter #(
                                 valid_mem[op_set_q] <= 1'b0;
                         end else begin
                             valid_mem[op_set_q] <=
-                                (op_update_sharer_vec_q != {NUM_RN{1'b0}});
+                                (op_update_sharer_eff != {NUM_RN{1'b0}});
                         end
                     end
                 end
@@ -245,6 +258,7 @@ module chi_hn_snoop_filter #(
                 op_update_state_q <= update_state;
                 op_update_sharer_vec_q <= update_sharer_vec;
                 op_update_invalidate_q <= update_invalidate;
+                op_update_merge_q <= update_merge;
             end
 
             if (op_data_valid_q && !op_is_update_q) begin
@@ -285,7 +299,7 @@ module chi_hn_snoop_filter #(
             if (op_data_valid_q) begin
                 if (op_is_update_q) begin
                     if (!op_update_invalidate_q &&
-                        (op_update_sharer_vec_q != {NUM_RN{1'b0}}))
+                        (op_update_sharer_eff != {NUM_RN{1'b0}}))
                         plru_q[op_set_q] <=
                             plru_touch_4way(plru_q[op_set_q],
                                             op_update_way_r);
@@ -314,4 +328,9 @@ module chi_hn_snoop_filter #(
         end
     end
     // synthesis translate_on
+
+    // A lookup/update is in progress. result_valid_q is not work in flight:
+    // it holds the last lookup result until the next lookup, and HN only
+    // reads it in HN_ST_WAIT_SF, which already keeps HN busy.
+    assign busy = op_busy;
 endmodule

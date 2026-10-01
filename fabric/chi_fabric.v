@@ -26,53 +26,63 @@ module chi_fabric #(
     input clk,
     input rstn,
     input clear,
+    // A flit is buffered anywhere in the fabric.
+    output busy,
 
     input      [NUM_REQ_SRC*QOS_W-1:0] req_qos_flat,
-    input      [NUM_NODES*QOS_W-1:0]   node_qos_flat,
+    input      [NUM_NODES*QOS_W-1:0]   rsp_qos_flat,
+    input      [NUM_NODES*QOS_W-1:0]   dat_qos_flat,
     input      [NUM_SNP_SRC*QOS_W-1:0] snp_qos_flat,
     input      [7:0]                   cfg_qos_age_shift,
     input      [7:0]                   cfg_qos_age_max,
 
     input      [NUM_REQ_SRC-1:0] req_in_valid,
     output     [NUM_REQ_SRC-1:0] req_in_ready,
-    input      [NUM_REQ_SRC*`CHI_REQ_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W)-1:0] req_in_flit,
+    input      [NUM_REQ_SRC*`CHI_REQ_W(NODE_ID_W)-1:0] req_in_flit,
     output     [NUM_REQ_SRC-1:0] req_in_pop_pulse,
     input      [NUM_REQ_SRC*NUM_REQ_TGT-1:0] req_route_onehot,
     output     [NUM_REQ_TGT-1:0] req_out_valid,
     input      [NUM_REQ_TGT-1:0] req_out_ready,
-    output     [NUM_REQ_TGT*`CHI_REQ_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W)-1:0] req_out_flit,
+    output     [NUM_REQ_TGT*`CHI_REQ_W(NODE_ID_W)-1:0] req_out_flit,
 
     input      [NUM_NODES-1:0] rsp_in_valid,
     output     [NUM_NODES-1:0] rsp_in_ready,
-    input      [NUM_NODES*`CHI_RSP_W(NODE_ID_W,TXN_ID_W,QOS_W,DBID_W)-1:0] rsp_in_flit,
+    input      [NUM_NODES*`CHI_RSP_W(NODE_ID_W)-1:0] rsp_in_flit,
     output     [NUM_NODES-1:0] rsp_in_pop_pulse,
     input      [NUM_NODES*NUM_NODES-1:0] rsp_route_onehot,
     output     [NUM_NODES-1:0] rsp_out_valid,
     input      [NUM_NODES-1:0] rsp_out_ready,
-    output     [NUM_NODES*`CHI_RSP_W(NODE_ID_W,TXN_ID_W,QOS_W,DBID_W)-1:0] rsp_out_flit,
+    output     [NUM_NODES*`CHI_RSP_W(NODE_ID_W)-1:0] rsp_out_flit,
 
     input      [NUM_SNP_SRC-1:0] snp_in_valid,
     output     [NUM_SNP_SRC-1:0] snp_in_ready,
-    input      [NUM_SNP_SRC*`CHI_SNP_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W)-1:0] snp_in_flit,
+    input      [NUM_SNP_SRC*`CHI_SNP_W(NODE_ID_W)-1:0] snp_in_flit,
     output     [NUM_SNP_SRC-1:0] snp_in_pop_pulse,
     input      [NUM_SNP_SRC*NUM_RN-1:0] snp_route_onehot,
     output     [NUM_RN-1:0] snp_out_valid,
     input      [NUM_RN-1:0] snp_out_ready,
-    output     [NUM_RN*`CHI_SNP_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W)-1:0] snp_out_flit,
+    output     [NUM_RN*`CHI_SNP_W(NODE_ID_W)-1:0] snp_out_flit,
 
     input      [NUM_NODES-1:0] dat_in_valid,
     output     [NUM_NODES-1:0] dat_in_ready,
-    input      [NUM_NODES*`CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W)-1:0] dat_in_flit,
+    input      [NUM_NODES*`CHI_DAT_W(DATA_WIDTH,NODE_ID_W)-1:0] dat_in_flit,
     output     [NUM_NODES-1:0] dat_in_pop_pulse,
     input      [NUM_NODES*NUM_NODES-1:0] dat_route_onehot,
     output     [NUM_NODES-1:0] dat_out_valid,
     input      [NUM_NODES-1:0] dat_out_ready,
-    output     [NUM_NODES*`CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W)-1:0] dat_out_flit
+    output     [NUM_NODES*`CHI_DAT_W(DATA_WIDTH,NODE_ID_W)-1:0] dat_out_flit
 );
-    localparam REQ_W = `CHI_REQ_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W);
-    localparam RSP_W = `CHI_RSP_W(NODE_ID_W,TXN_ID_W,QOS_W,DBID_W);
-    localparam SNP_W = `CHI_SNP_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W);
-    localparam DAT_W = `CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W);
+    `CHI_FLIT_PARAM_CHECK(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W,QOS_W,DATA_WIDTH)
+    localparam REQ_W = `CHI_REQ_W(NODE_ID_W);
+    localparam RSP_W = `CHI_RSP_W(NODE_ID_W);
+    localparam SNP_W = `CHI_SNP_W(NODE_ID_W);
+    localparam DAT_W = `CHI_DAT_W(DATA_WIDTH,NODE_ID_W);
+    wire req_busy;
+    wire rsp_busy;
+    wire snp_busy;
+    wire dat_busy;
+
+    assign busy = req_busy || rsp_busy || snp_busy || dat_busy;
 
     chi_channel_slice #(
         .NUM_IN(NUM_REQ_SRC),
@@ -85,6 +95,7 @@ module chi_fabric #(
     ) u_req_slice (
         .clk(clk),
         .rstn(rstn),
+        .busy(req_busy),
         .clear(clear),
         .in_valid(req_in_valid),
         .in_ready(req_in_ready),
@@ -110,13 +121,14 @@ module chi_fabric #(
     ) u_rsp_slice (
         .clk(clk),
         .rstn(rstn),
+        .busy(rsp_busy),
         .clear(clear),
         .in_valid(rsp_in_valid),
         .in_ready(rsp_in_ready),
         .in_flit(rsp_in_flit),
         .in_pop_pulse(rsp_in_pop_pulse),
         .route_onehot_flat(rsp_route_onehot),
-        .qos_flat(node_qos_flat),
+        .qos_flat(rsp_qos_flat),
         .cfg_qos_age_shift(cfg_qos_age_shift),
         .cfg_qos_age_max(cfg_qos_age_max),
         .out_valid(rsp_out_valid),
@@ -135,6 +147,7 @@ module chi_fabric #(
     ) u_snp_slice (
         .clk(clk),
         .rstn(rstn),
+        .busy(snp_busy),
         .clear(clear),
         .in_valid(snp_in_valid),
         .in_ready(snp_in_ready),
@@ -160,13 +173,14 @@ module chi_fabric #(
     ) u_dat_slice (
         .clk(clk),
         .rstn(rstn),
+        .busy(dat_busy),
         .clear(clear),
         .in_valid(dat_in_valid),
         .in_ready(dat_in_ready),
         .in_flit(dat_in_flit),
         .in_pop_pulse(dat_in_pop_pulse),
         .route_onehot_flat(dat_route_onehot),
-        .qos_flat(node_qos_flat),
+        .qos_flat(dat_qos_flat),
         .cfg_qos_age_shift(cfg_qos_age_shift),
         .cfg_qos_age_max(cfg_qos_age_max),
         .out_valid(dat_out_valid),

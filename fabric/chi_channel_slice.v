@@ -15,6 +15,7 @@ module chi_channel_slice #(
 )(
     input                         clk,
     input                         rstn,
+    output                   busy,
     input                         clear,
     input      [NUM_IN-1:0]       in_valid,
     output     [NUM_IN-1:0]       in_ready,
@@ -140,4 +141,7 @@ module chi_channel_slice #(
         .out_ready(xbar_ready),
         .out_flit(xbar_flit)
     );
+
+    // A flit is held in an input buffer or an output register.
+    assign busy = (|buf_valid) || (|out_valid);
 endmodule

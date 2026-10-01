@@ -14,7 +14,19 @@ module chi_clock_gate_insert (
 );
     wire gate_open = enable || scan_enable;
 
+`ifdef CHI_SIM_REAL_ICG
+    // Simulation model of a latch-based ICG, used to prove that the enable
+    // really covers all in-flight work: the enable is captured while clk_in
+    // is low and the clock is suppressed for the whole next high phase.
+    reg en_latch;
+    always @(*) begin
+        if (!clk_in)
+            en_latch = gate_open;
+    end
+    assign clk_out = clk_in & en_latch;
+`else
     assign clk_out = clk_in;
+`endif
 
     // synthesis translate_off
     always @(*) begin

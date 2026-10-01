@@ -7,7 +7,10 @@
 // -----------------------------------------------------------------------------
 module chi_sn_f #(
     parameter NODE_ID    = 3,
+    // AXI data width.
     parameter DATA_WIDTH = `CHI_DEFAULT_DATA_W,
+    // CHI DAT channel data width.
+    parameter DAT_DATA_W = `CHI_DEFAULT_DAT_DATA_W,
     parameter ADDR_WIDTH = `CHI_DEFAULT_ADDR_W,
     parameter NODE_ID_W  = `CHI_DEFAULT_NODE_ID_W,
     parameter TXN_ID_W   = `CHI_DEFAULT_TXN_ID_W,
@@ -20,21 +23,21 @@ module chi_sn_f #(
     input                    rstn,
 
     input                    rx_req_valid,
-    input      [`CHI_REQ_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W)-1:0] rx_req_flit,
+    input      [`CHI_REQ_W(NODE_ID_W)-1:0] rx_req_flit,
     output                   rx_req_ready,
     output                   rx_req_lcrdv,
 
     input                    rx_dat_valid,
-    input      [`CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W)-1:0] rx_dat_flit,
+    input      [`CHI_DAT_W(DAT_DATA_W,NODE_ID_W)-1:0] rx_dat_flit,
     output                   rx_dat_ready,
     output                   rx_dat_lcrdv,
 
     output                   tx_rsp_valid,
-    output     [`CHI_RSP_W(NODE_ID_W,TXN_ID_W,QOS_W,DBID_W)-1:0] tx_rsp_flit,
+    output     [`CHI_RSP_W(NODE_ID_W)-1:0] tx_rsp_flit,
     input                    tx_rsp_lcrdv,
 
     output                   tx_dat_valid,
-    output     [`CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W)-1:0] tx_dat_flit,
+    output     [`CHI_DAT_W(DAT_DATA_W,NODE_ID_W)-1:0] tx_dat_flit,
     input                    tx_dat_lcrdv,
 
     output                   axi_arvalid,
@@ -61,11 +64,13 @@ module chi_sn_f #(
     output                   axi_wlast,
     input                    axi_bvalid,
     output                   axi_bready,
-    input      [1:0]         axi_bresp
+    input      [1:0]         axi_bresp,
+    // A buffered request/data flit, an AXI burst or a TX flit in flight.
+    output                   busy
 );
-    localparam REQ_W = `CHI_REQ_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W);
-    localparam RSP_W = `CHI_RSP_W(NODE_ID_W,TXN_ID_W,QOS_W,DBID_W);
-    localparam DAT_W = `CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W);
+    localparam REQ_W = `CHI_REQ_W(NODE_ID_W);
+    localparam RSP_W = `CHI_RSP_W(NODE_ID_W);
+    localparam DAT_W = `CHI_DAT_W(DAT_DATA_W,NODE_ID_W);
 
     wire                 reqbuf_valid;
     wire                 reqbuf_in_ready;
@@ -78,6 +83,7 @@ module chi_sn_f #(
     wire [DAT_W-1:0]     wbuf_flit;
     wire                 bridge_req_ready;
     wire                 bridge_wdat_ready;
+    wire                 bridge_busy;
     wire                 bridge_rsp_valid;
     wire                 bridge_rsp_ready;
     wire [RSP_W-1:0]     bridge_rsp_flit;
@@ -134,6 +140,7 @@ module chi_sn_f #(
     chi_sn_axi_bridge #(
         .NODE_ID(NODE_ID),
         .DATA_WIDTH(DATA_WIDTH),
+        .DAT_DATA_W(DAT_DATA_W),
         .ADDR_WIDTH(ADDR_WIDTH),
         .NODE_ID_W(NODE_ID_W),
         .TXN_ID_W(TXN_ID_W),
@@ -142,6 +149,7 @@ module chi_sn_f #(
     ) u_axi_bridge (
         .clk(clk),
         .rstn(rstn),
+        .busy(bridge_busy),
         .req_valid(reqbuf_valid),
         .req_ready(bridge_req_ready),
         .req_flit(reqbuf_flit),
@@ -229,4 +237,7 @@ module chi_sn_f #(
         .tx_credit_return_pulse(tx_dat_return_unused),
         .tx_credit_stall(tx_dat_stall_unused)
     );
+
+    assign busy = reqbuf_valid || wbuf_valid || bridge_busy ||
+                  tx_rsp_valid || tx_dat_valid;
 endmodule

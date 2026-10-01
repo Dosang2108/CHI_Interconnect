@@ -1,0 +1,7 @@
+reports/
+xsim.dir/
+*.log
+*.jou
+*.pb
+*.wdb
+.Xil/

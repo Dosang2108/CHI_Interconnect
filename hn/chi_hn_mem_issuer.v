@@ -14,13 +14,13 @@ module chi_hn_mem_issuer #(
     input                    rstn,
     input                    req_valid,
     output                   req_ready,
-    input      [`CHI_REQ_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W)-1:0] req_flit,
+    input      [`CHI_REQ_W(NODE_ID_W)-1:0] req_flit,
     output                   mem_req_valid,
     input                    mem_req_ready,
-    output     [`CHI_REQ_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W)-1:0] mem_req_flit
+    output     [`CHI_REQ_W(NODE_ID_W)-1:0] mem_req_flit
 );
     reg             valid_q;
-    reg [`CHI_REQ_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W)-1:0] flit_q;
+    reg [`CHI_REQ_W(NODE_ID_W)-1:0] flit_q;
 
     wire req_fire = req_valid && req_ready;
     wire mem_fire = mem_req_valid && mem_req_ready;
@@ -32,7 +32,7 @@ module chi_hn_mem_issuer #(
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             valid_q <= 1'b0;
-            flit_q  <= {`CHI_REQ_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W){1'b0}};
+            flit_q  <= {`CHI_REQ_W(NODE_ID_W){1'b0}};
         end else begin
             if (req_fire) begin
                 valid_q <= 1'b1;

@@ -14,6 +14,7 @@ module chi_hn_llc #(
 )(
     input                    clk,
     input                    rstn,
+    output                   busy,
     input                    clear,
 
     input                    lookup_valid,
@@ -33,6 +34,7 @@ module chi_hn_llc #(
     input      [2:0]         line_update_state,
 
     input                    line_invalidate_valid,
+    output                   line_invalidate_ready,
     input      [ADDR_WIDTH-1:0] line_invalidate_addr,
 
     output                   evict_valid,
@@ -226,6 +228,7 @@ module chi_hn_llc #(
     assign inv_read_fire = inv_input_read_fire || inv_pending_read_fire;
     assign inv_pending_slot_available = !inv_pending_q ||
                                         inv_pending_read_fire;
+    assign line_invalidate_ready = inv_pending_slot_available;
     assign inv_capture_pending = line_invalidate_valid &&
                                  !inv_input_read_fire &&
                                  inv_pending_slot_available;
@@ -583,6 +586,10 @@ module chi_hn_llc #(
         end
     end
     // synthesis translate_on
+
+    // A lookup, line update, invalidate or eviction is in progress.
+    assign busy = lookup_valid_q || update_valid_q || update_pending_q ||
+                  inv_pending_q || inv_read_q || evict_valid_q;
 endmodule
 
 // -----------------------------------------------------------------------------

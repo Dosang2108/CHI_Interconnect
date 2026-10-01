@@ -8,7 +8,12 @@
 module chi_rn_txn_tracker #(
     parameter TXN_ID_W     = `CHI_DEFAULT_TXN_ID_W,
     parameter TXN_TBL_SIZE = `CHI_DEFAULT_RN_TXN_TBL_SIZE,
-    parameter TIMEOUT_CYCLES = 1024
+    parameter TIMEOUT_CYCLES = 1024,
+    // 0: timeout_valid is a one-cycle watchdog pulse when an entry first
+    //    reaches TIMEOUT_CYCLES; the entry stays allocated.
+    // 1: legacy functional timeout; timeout_valid stays high for the aged
+    //    entry until the owner completes (reaps) it.
+    parameter FUNCTIONAL_TIMEOUT = 0
 )(
     input                    clk,
     input                    rstn,
@@ -23,8 +28,13 @@ module chi_rn_txn_tracker #(
     output                   dbid_match_valid,
 
     input                    complete_valid,
+    input                    complete_clear,
     input      [TXN_ID_W-1:0] complete_txn_id,
     output                   complete_match_valid,
+
+    input                    touch_valid,
+    input      [TXN_ID_W-1:0] touch_txn_id,
+    output                   touch_match_valid,
 
     input                    lookup_valid,
     input      [TXN_ID_W-1:0] lookup_txn_id,
@@ -51,18 +61,23 @@ module chi_rn_txn_tracker #(
 
     wire [IDX_W-1:0] complete_idx = complete_txn_id[IDX_W-1:0];
     wire [IDX_W-1:0] dbid_idx     = dbid_update_txn_id[IDX_W-1:0];
+    wire [IDX_W-1:0] touch_idx    = touch_txn_id[IDX_W-1:0];
     wire [IDX_W-1:0] lookup_idx   = lookup_txn_id[IDX_W-1:0];
     wire [EPOCH_W-1:0] complete_epoch = complete_txn_id[TXN_ID_W-1:IDX_W];
     wire [EPOCH_W-1:0] dbid_epoch     = dbid_update_txn_id[TXN_ID_W-1:IDX_W];
+    wire [EPOCH_W-1:0] touch_epoch    = touch_txn_id[TXN_ID_W-1:IDX_W];
     wire [EPOCH_W-1:0] lookup_epoch   = lookup_txn_id[TXN_ID_W-1:IDX_W];
     wire complete_match = valid_q[complete_idx] &&
                           (complete_epoch == epoch_q[complete_idx]);
     wire dbid_match = valid_q[dbid_idx] &&
                       (dbid_epoch == epoch_q[dbid_idx]);
+    wire touch_match = valid_q[touch_idx] &&
+                       (touch_epoch == epoch_q[touch_idx]);
     wire lookup_match_raw = valid_q[lookup_idx] &&
                             (lookup_epoch == epoch_q[lookup_idx]);
     wire alloc_fire = alloc_valid && alloc_ready;
-    wire complete_fire = complete_valid && complete_match;
+    wire complete_fire = complete_valid && complete_clear && complete_match;
+    wire touch_fire = touch_valid && touch_match;
 
     integer i;
     integer t;
@@ -73,6 +88,7 @@ module chi_rn_txn_tracker #(
     assign table_full   = &valid_q;
     assign dbid_match_valid = dbid_update_valid && dbid_match;
     assign complete_match_valid = complete_valid && complete_match;
+    assign touch_match_valid = touch_valid && touch_match;
     assign lookup_match = lookup_valid && lookup_match_raw;
     assign debug_entry_valid = valid_q;
 
@@ -88,7 +104,10 @@ module chi_rn_txn_tracker #(
         timeout_valid = 1'b0;
         timeout_txn_id = {TXN_ID_W{1'b0}};
         for (t = 0; t < TXN_TBL_SIZE; t = t + 1) begin
-            if (!timeout_valid && valid_q[t] && (age_q[t] >= TIMEOUT_VALUE)) begin
+            if (!timeout_valid && valid_q[t] &&
+                ((FUNCTIONAL_TIMEOUT != 0) ?
+                 (age_q[t] >= TIMEOUT_VALUE) :
+                 (age_q[t] == TIMEOUT_VALUE - 1'b1))) begin
                 timeout_valid = 1'b1;
                 timeout_txn_id = {epoch_q[t], t[IDX_W-1:0]};
             end
@@ -137,6 +156,10 @@ module chi_rn_txn_tracker #(
                 valid_q[complete_idx]      <= 1'b0;
                 age_q[complete_idx]        <= {AGE_W{1'b0}};
                 epoch_q[complete_idx]      <= epoch_q[complete_idx] + 1'b1;
+            end
+
+            if (touch_fire && !complete_fire) begin
+                age_q[touch_idx] <= {AGE_W{1'b0}};
             end
         end
     end

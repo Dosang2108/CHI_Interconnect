@@ -10,12 +10,16 @@ module chi_top #(
     parameter integer NUM_HN     = `CHI_DEFAULT_NUM_HN,
     parameter integer NUM_SN     = `CHI_DEFAULT_NUM_SN,
     parameter integer NUM_MN     = `CHI_DEFAULT_NUM_MN,
+    // CPU word and SN AXI width.
     parameter integer DATA_WIDTH = `CHI_DEFAULT_DATA_W,
+    // CHI DAT channel data width (128/256/512).
+    parameter integer DAT_DATA_W = `CHI_DEFAULT_DAT_DATA_W,
     parameter integer ADDR_WIDTH = `CHI_DEFAULT_ADDR_W,
     parameter integer NODE_ID_W  = `CHI_DEFAULT_NODE_ID_W,
     parameter integer TXN_ID_W   = `CHI_DEFAULT_TXN_ID_W,
     parameter integer QOS_W      = `CHI_DEFAULT_QOS_W,
     parameter integer DBID_W     = `CHI_DEFAULT_DBID_W,
+    parameter integer CPU_TAG_W  = 2,
     parameter integer INIT_CRD   = `CHI_DEFAULT_INIT_CRD,
     parameter integer HN_POS_DEPTH = `CHI_DEFAULT_POS_DEPTH,
     parameter integer HN_SF_ENTRIES = `CHI_DEFAULT_SF_ENTRIES,
@@ -24,13 +28,20 @@ module chi_top #(
     parameter integer HN_WRITE_TRACKER_DEPTH = `CHI_DEFAULT_HN_WRITE_TRACKER_DEPTH,
     parameter integer HN_READ_TRACKER_DEPTH = `CHI_DEFAULT_HN_READ_TRACKER_DEPTH,
     parameter integer HN_SNOOP_TRACKER_DEPTH = `CHI_DEFAULT_HN_SNOOP_TRACKER_DEPTH,
+    parameter integer HN_NUM_SLOTS = 2,
     parameter integer RN_CACHE_LINES = `CHI_DEFAULT_RN_CACHE_LINES,
     parameter integer RN_TXN_TBL_SIZE = `CHI_DEFAULT_RN_TXN_TBL_SIZE,
+    parameter integer RN_TIMEOUT_CYCLES = 1024,
+    // 0 (default): node timeouts are watchdogs that set ERR_STATUS[4]/IRQ
+    // and never complete a transaction. 1: legacy functional timeouts.
+    parameter integer FUNCTIONAL_TIMEOUT = 0,
     parameter integer FABRIC_FIFO_DEPTH = `CHI_DEFAULT_FIFO_DEPTH,
     parameter integer ENABLE_PERF = `CHI_DEFAULT_ENABLE_PERF,
     parameter integer HN_ENABLE_LLC_ECC = `CHI_DEFAULT_ENABLE_LLC_ECC,
     parameter integer FABRIC_OUTPUT_FIFO_DEPTH = `CHI_DEFAULT_OUTPUT_FIFO_DEPTH,
-    parameter integer ENABLE_QOS_AGING = `CHI_DEFAULT_ENABLE_QOS_AGING
+    parameter integer ENABLE_QOS_AGING = `CHI_DEFAULT_ENABLE_QOS_AGING,
+    parameter integer USE_EXTERNAL_L1_SNOOP = 0,
+    parameter integer EXTERNAL_L1_WRITE_THROUGH_NO_ALLOCATE = USE_EXTERNAL_L1_SNOOP
 )(
     input                         clk,
     input                         rstn,
@@ -48,9 +59,26 @@ module chi_top #(
     input      [NUM_RN*ADDR_WIDTH-1:0] cpu_req_addr,
     input      [NUM_RN*4-1:0]     cpu_req_op,
     input      [NUM_RN*3-1:0]     cpu_req_size,
+    input      [NUM_RN*QOS_W-1:0] cpu_req_qos,
+    input      [NUM_RN*CPU_TAG_W-1:0] cpu_req_tag,
     input      [NUM_RN*DATA_WIDTH-1:0] cpu_wdata,
+    input      [NUM_RN*64*8-1:0]  cpu_wdata_line,
+    input      [NUM_RN*64-1:0]    cpu_wstrb_line,
     output     [NUM_RN*DATA_WIDTH-1:0] cpu_rdata,
     output     [NUM_RN-1:0]       cpu_resp_valid,
+    output     [NUM_RN*CPU_TAG_W-1:0] cpu_resp_tag,
+    output     [NUM_RN-1:0]       cpu_resp_line_valid,
+    output     [NUM_RN*64*8-1:0]  cpu_resp_line_data,
+    output     [NUM_RN*CPU_TAG_W-1:0] cpu_resp_line_tag,
+
+    output     [NUM_RN-1:0]       l1_snoop_valid,
+    input      [NUM_RN-1:0]       l1_snoop_ready,
+    output     [NUM_RN-1:0]       l1_snoop_invalidate,
+    output     [NUM_RN*ADDR_WIDTH-1:0] l1_snoop_addr,
+    input      [NUM_RN-1:0]       l1_snoop_result_valid,
+    input      [NUM_RN-1:0]       l1_snoop_hit,
+    input      [NUM_RN-1:0]       l1_snoop_dirty,
+    input      [NUM_RN*64*8-1:0]  l1_snoop_data,
 
     output     [NUM_SN-1:0]       axi_arvalid,
     input      [NUM_SN-1:0]       axi_arready,
@@ -78,6 +106,7 @@ module chi_top #(
     output     [NUM_SN-1:0]       axi_bready,
     input      [NUM_SN*2-1:0]     axi_bresp
 );
+    `CHI_FLIT_PARAM_CHECK(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W,QOS_W,DAT_DATA_W)
     localparam NUM_NODES   = NUM_RN + NUM_HN + NUM_SN + NUM_MN;
     localparam NUM_REQ_SRC = NUM_RN + NUM_HN;
     localparam NUM_REQ_TGT = NUM_HN + NUM_SN + NUM_MN;
@@ -87,21 +116,23 @@ module chi_top #(
     localparam integer SN_BASE_ID = NUM_RN + NUM_HN;
     localparam integer MN_BASE_ID = NUM_RN + NUM_HN + NUM_SN;
 
-    localparam REQ_W   = `CHI_REQ_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W);
-    localparam RSP_W   = `CHI_RSP_W(NODE_ID_W,TXN_ID_W,QOS_W,DBID_W);
-    localparam SNP_W   = `CHI_SNP_W(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,QOS_W);
-    localparam DAT_W   = `CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W);
+    localparam REQ_W   = `CHI_REQ_W(NODE_ID_W);
+    localparam RSP_W   = `CHI_RSP_W(NODE_ID_W);
+    localparam SNP_W   = `CHI_SNP_W(NODE_ID_W);
+    localparam DAT_W   = `CHI_DAT_W(DAT_DATA_W,NODE_ID_W);
 
-    localparam REQ_ADDR_LSB = `CHI_REQ_ADDR_LSB;
-    localparam REQ_TGT_LSB  = `CHI_REQ_TGT_LSB(ADDR_WIDTH,TXN_ID_W,NODE_ID_W);
-    localparam REQ_QOS_LSB  = `CHI_REQ_QOS_LSB(ADDR_WIDTH,TXN_ID_W,NODE_ID_W);
-    localparam RSP_TGT_LSB  = `CHI_RSP_TGT_LSB(DBID_W,TXN_ID_W,NODE_ID_W);
-    localparam SNP_TGT_LSB  = `CHI_SNP_TGT_LSB(ADDR_WIDTH,TXN_ID_W,NODE_ID_W);
-    localparam SNP_QOS_LSB  = `CHI_SNP_QOS_LSB(ADDR_WIDTH,TXN_ID_W,NODE_ID_W);
-    localparam DAT_TGT_LSB  = `CHI_DAT_TGT_LSB(DATA_WIDTH,DBID_W,TXN_ID_W,NODE_ID_W);
+    localparam REQ_ADDR_LSB = `CHI_REQ_ADDR_LSB(NODE_ID_W);
+    localparam REQ_TGT_LSB  = `CHI_REQ_TGT_LSB(NODE_ID_W);
+    localparam REQ_QOS_LSB  = `CHI_REQ_QOS_LSB(NODE_ID_W);
+    localparam RSP_TGT_LSB  = `CHI_RSP_TGT_LSB(NODE_ID_W);
+    localparam RSP_QOS_LSB  = `CHI_RSP_QOS_LSB(NODE_ID_W);
+    localparam SNP_QOS_LSB  = `CHI_SNP_QOS_LSB(NODE_ID_W);
+    localparam DAT_TGT_LSB  = `CHI_DAT_TGT_LSB(DAT_DATA_W,NODE_ID_W);
+    localparam DAT_QOS_LSB  = `CHI_DAT_QOS_LSB(DAT_DATA_W,NODE_ID_W);
 
     wire [NUM_REQ_SRC*QOS_W-1:0] req_qos_flat;
-    wire [NUM_NODES*QOS_W-1:0]   node_qos_flat;
+    wire [NUM_NODES*QOS_W-1:0]   rsp_qos_flat;
+    wire [NUM_NODES*QOS_W-1:0]   dat_qos_flat;
     wire [NUM_SNP_SRC*QOS_W-1:0] snp_qos_flat;
     wire                         cfg_region_valid;
     wire [ADDR_WIDTH-1:0]        cfg_hnf_base;
@@ -152,6 +183,7 @@ module chi_top #(
     wire [NUM_HN-1:0]        hn_tx_snp_valid;
     wire [NUM_HN-1:0]        hn_tx_snp_lcrdv;
     wire [NUM_HN*SNP_W-1:0]  hn_tx_snp_flit;
+    wire [NUM_HN*NODE_ID_W-1:0] hn_tx_snp_tgt_id;
     wire [NUM_HN-1:0]        hn_tx_dat_valid;
     wire [NUM_HN-1:0]        hn_tx_dat_lcrdv;
     wire [NUM_HN*DAT_W-1:0]  hn_tx_dat_flit;
@@ -165,6 +197,16 @@ module chi_top #(
     wire [NUM_HN-1:0]        hn_ecc_single_event;
     wire [NUM_HN-1:0]        hn_ecc_double_event;
     wire [NUM_HN-1:0]        hn_exclusive_fail_event;
+    wire [NUM_HN-1:0]        hn_watchdog_event;
+    wire [NUM_RN-1:0]        rn_watchdog_event;
+    wire [NUM_MN-1:0]        mn_watchdog_event;
+    wire [NUM_RN-1:0]        rn_busy;
+    wire [NUM_HN-1:0]        hn_busy;
+    wire [NUM_SN-1:0]        sn_busy;
+    wire [NUM_MN-1:0]        mn_busy;
+    wire                     fabric_busy;
+    wire                     chi_busy;
+    wire                     bist_reject_event;
 
     wire [NUM_SN-1:0]        sn_rx_req_lcrdv_unused;
     wire [NUM_SN-1:0]        sn_rx_dat_lcrdv_unused;
@@ -181,12 +223,14 @@ module chi_top #(
     wire [NUM_MN-1:0]        mn_rx_rsp_lcrdv_unused;
     wire [NUM_MN-1:0]        mn_rx_req_ready;
     wire [NUM_MN-1:0]        mn_rx_rsp_ready;
+    wire [NUM_MN-1:0]        mn_rx_dat_ready;
     wire [NUM_MN-1:0]        mn_tx_rsp_valid;
     wire [NUM_MN-1:0]        mn_tx_rsp_lcrdv;
     wire [NUM_MN*RSP_W-1:0]  mn_tx_rsp_flit;
     wire [NUM_MN-1:0]        mn_tx_snp_valid;
     wire [NUM_MN-1:0]        mn_tx_snp_lcrdv;
     wire [NUM_MN*SNP_W-1:0]  mn_tx_snp_flit;
+    wire [NUM_MN*NODE_ID_W-1:0] mn_tx_snp_tgt_id;
 
     wire [NUM_REQ_SRC-1:0]        req_src_valid;
     wire [NUM_REQ_SRC-1:0]        req_src_ready;
@@ -224,12 +268,27 @@ module chi_top #(
     wire [NUM_RN-1:0]        snp_rn_out_ready;
     wire [NUM_RN*SNP_W-1:0]  snp_rn_out_flit;
 
-    assign node_qos_flat = {NUM_NODES*QOS_W{1'b0}};
+    // Work in flight anywhere in the interconnect. NUM_MN may be 0, so the
+    // MN term is selected by a constant instead of reducing an empty bus.
+    assign chi_busy = (|rn_busy) || (|hn_busy) || (|sn_busy) ||
+                      ((NUM_MN == 0) ? 1'b0 : (|mn_busy)) ||
+                      fabric_busy;
+
+    // The fabric clock may only stop when nothing is in flight. CPU
+    // requests and AXI responses wake it; the BIST-init pulse holds it open
+    // for the cycle it has to reach the fabric.
     assign chi_cg_en     = !cfg_cg_enable ||
+                            chi_busy ||
+                            csr_bist_init_pulse ||
                             (|cpu_req_valid) ||
                             (|axi_rvalid) ||
                             (|axi_bvalid);
-    assign fabric_clear = csr_bist_init_pulse;
+
+    // fabric_clear only resets the fabric queues, not the node trackers, so
+    // a BIST init while traffic is in flight would drop flits that nodes are
+    // still waiting for. Refuse it then and report ERR_STATUS[5].
+    assign fabric_clear = csr_bist_init_pulse && !chi_busy;
+    assign bist_reject_event = csr_bist_init_pulse && chi_busy;
 
     chi_clock_gate_insert u_top_clock_gate (
         .clk_in(clk),
@@ -257,6 +316,9 @@ module chi_top #(
         .ecc_double_event(|hn_ecc_double_event),
         .rn_parity_error_event(|rn_cache_parity_error_event),
         .exclusive_fail_event(|hn_exclusive_fail_event),
+        .watchdog_event((|hn_watchdog_event) | (|rn_watchdog_event) |
+                        (|mn_watchdog_event)),
+        .bist_reject_event(bist_reject_event),
         .err_irq(chi_irq),
         .cfg_region_valid(cfg_region_valid),
         .cfg_hnf_base(cfg_hnf_base),
@@ -285,9 +347,10 @@ module chi_top #(
             localparam integer REQ_SRC_IDX = gr;
             localparam integer DVM_REQ_TGT_IDX = (NUM_MN == 0) ? 0 : (NUM_HN + NUM_SN);
             wire [ADDR_WIDTH-1:0] req_addr_for_route;
-            wire [5:0]           req_opcode_for_route;
+            wire [`CHI_REQ_OPCODE_W-1:0] req_opcode_for_route;
             wire [NODE_ID_W-1:0]  rsp_tgt_for_route;
             wire [NODE_ID_W-1:0]  dat_tgt_for_route;
+            wire [`CHI_DAT_QOS_W-1:0] dat_qos_for_arb;
             wire [NODE_ID_W-1:0]  route_id_unused_req;
             wire [NODE_ID_W-1:0]  route_id_addr_req;
             wire [NODE_ID_W-1:0]  route_id_unused_rsp;
@@ -315,26 +378,37 @@ module chi_top #(
             assign rsp_node_in_valid[RN_NODE_ID] = rn_tx_rsp_valid[gr];
             assign rsp_node_in_flit[RN_NODE_ID*RSP_W +: RSP_W] =
                    rn_tx_rsp_flit[gr*RSP_W +: RSP_W];
+            assign rsp_qos_flat[RN_NODE_ID*QOS_W +: QOS_W] =
+                   rn_tx_rsp_flit[gr*RSP_W + RSP_QOS_LSB +: QOS_W];
             assign rn_tx_rsp_lcrdv[gr] = rsp_node_in_valid[RN_NODE_ID] &&
                                           rsp_node_in_ready[RN_NODE_ID];
 
             assign dat_node_in_valid[RN_NODE_ID] = rn_tx_dat_valid[gr];
             assign dat_node_in_flit[RN_NODE_ID*DAT_W +: DAT_W] =
                    rn_tx_dat_flit[gr*DAT_W +: DAT_W];
+            assign dat_qos_for_arb =
+                   rn_tx_dat_flit[gr*DAT_W + DAT_QOS_LSB +: `CHI_DAT_QOS_W];
             assign rn_tx_dat_lcrdv[gr] = dat_node_in_valid[RN_NODE_ID] &&
                                           dat_node_in_ready[RN_NODE_ID];
+
+            if (QOS_W > `CHI_DAT_QOS_W) begin : gen_dat_qos_wide
+                assign dat_qos_flat[RN_NODE_ID*QOS_W +: QOS_W] =
+                       {{(QOS_W-`CHI_DAT_QOS_W){1'b0}}, dat_qos_for_arb};
+            end else begin : gen_dat_qos_narrow
+                assign dat_qos_flat[RN_NODE_ID*QOS_W +: QOS_W] =
+                       dat_qos_for_arb[QOS_W-1:0];
+            end
 
             assign rsp_node_out_ready[RN_NODE_ID] = rn_rx_rsp_ready[gr];
             assign snp_rn_out_ready[gr]           = rn_rx_snp_ready[gr];
             assign dat_node_out_ready[RN_NODE_ID] = rn_rx_dat_ready[gr];
 
             assign req_addr_for_route = rn_tx_req_flit[gr*REQ_W + REQ_ADDR_LSB +: ADDR_WIDTH];
-            assign req_opcode_for_route = rn_tx_req_flit[gr*REQ_W + `CHI_REQ_OPCODE_LSB(ADDR_WIDTH) +: 6];
+            assign req_opcode_for_route = rn_tx_req_flit[gr*REQ_W + `CHI_REQ_OPCODE_LSB(NODE_ID_W) +: `CHI_REQ_OPCODE_W];
             assign rsp_tgt_for_route  = rn_tx_rsp_flit[gr*RSP_W + RSP_TGT_LSB +: NODE_ID_W];
             assign dat_tgt_for_route  = rn_tx_dat_flit[gr*DAT_W + DAT_TGT_LSB +: NODE_ID_W];
             assign req_is_dvm_for_route =
-                (req_opcode_for_route == `CHI_REQ_DVM_OP) ||
-                (req_opcode_for_route == `CHI_REQ_DVM_SYNC);
+                (req_opcode_for_route == `CHI_REQ_DVM_OP);
             assign req_is_no_snp_for_route =
                 (req_opcode_for_route == `CHI_REQ_RD_NO_SNP) ||
                 (req_opcode_for_route == `CHI_REQ_WR_NO_SNP);
@@ -378,14 +452,19 @@ module chi_top #(
             chi_rn_f #(
                 .NODE_ID(RN_NODE_ID),
                 .DATA_WIDTH(DATA_WIDTH),
+                .DAT_DATA_W(DAT_DATA_W),
                 .ADDR_WIDTH(ADDR_WIDTH),
                 .NODE_ID_W(NODE_ID_W),
                 .TXN_ID_W(TXN_ID_W),
                 .QOS_W(QOS_W),
                 .DBID_W(DBID_W),
+                .CPU_TAG_W(CPU_TAG_W),
                 .INIT_CRD(INIT_CRD),
                 .TXN_TBL_SIZE(RN_TXN_TBL_SIZE),
                 .RN_CACHE_LINES(RN_CACHE_LINES),
+                .USE_EXTERNAL_L1_SNOOP(USE_EXTERNAL_L1_SNOOP),
+                .TIMEOUT_CYCLES(RN_TIMEOUT_CYCLES),
+                .FUNCTIONAL_TIMEOUT(FUNCTIONAL_TIMEOUT),
                 .ENABLE_PERF(ENABLE_PERF)
             ) u_rn_f (
                 .clk(clk_int),
@@ -395,9 +474,25 @@ module chi_top #(
                 .cpu_req_addr(cpu_req_addr[gr*ADDR_WIDTH +: ADDR_WIDTH]),
                 .cpu_req_op(cpu_req_op[gr*4 +: 4]),
                 .cpu_req_size(cpu_req_size[gr*3 +: 3]),
+                .cpu_req_qos(cpu_req_qos[gr*QOS_W +: QOS_W]),
+                .cpu_req_tag(cpu_req_tag[gr*CPU_TAG_W +: CPU_TAG_W]),
                 .cpu_wdata(cpu_wdata[gr*DATA_WIDTH +: DATA_WIDTH]),
+                .cpu_wdata_line_in(cpu_wdata_line[gr*64*8 +: 64*8]),
+                .cpu_wstrb_line_in(cpu_wstrb_line[gr*64 +: 64]),
                 .cpu_rdata(cpu_rdata[gr*DATA_WIDTH +: DATA_WIDTH]),
                 .cpu_resp_valid(cpu_resp_valid[gr]),
+                .cpu_resp_tag(cpu_resp_tag[gr*CPU_TAG_W +: CPU_TAG_W]),
+                .cpu_resp_line_valid(cpu_resp_line_valid[gr]),
+                .cpu_resp_line_data(cpu_resp_line_data[gr*64*8 +: 64*8]),
+                .cpu_resp_line_tag(cpu_resp_line_tag[gr*CPU_TAG_W +: CPU_TAG_W]),
+                .l1_snoop_valid(l1_snoop_valid[gr]),
+                .l1_snoop_ready(l1_snoop_ready[gr]),
+                .l1_snoop_invalidate(l1_snoop_invalidate[gr]),
+                .l1_snoop_addr(l1_snoop_addr[gr*ADDR_WIDTH +: ADDR_WIDTH]),
+                .l1_snoop_result_valid(l1_snoop_result_valid[gr]),
+                .l1_snoop_hit(l1_snoop_hit[gr]),
+                .l1_snoop_dirty(l1_snoop_dirty[gr]),
+                .l1_snoop_data(l1_snoop_data[gr*64*8 +: 64*8]),
                 .tx_req_valid(rn_tx_req_valid[gr]),
                 .tx_req_flit(rn_tx_req_flit[gr*REQ_W +: REQ_W]),
                 .tx_req_lcrdv(rn_tx_req_lcrdv[gr]),
@@ -420,7 +515,9 @@ module chi_top #(
                 .rx_dat_ready(rn_rx_dat_ready[gr]),
                 .rx_dat_lcrdv(rn_rx_dat_lcrdv_unused[gr]),
                 .perf_counts(rn_perf_counts_flat[gr*16*32 +: 16*32]),
-                .cache_parity_error_event(rn_cache_parity_error_event[gr])
+                .cache_parity_error_event(rn_cache_parity_error_event[gr]),
+                .watchdog_event(rn_watchdog_event[gr]),
+                .busy(rn_busy[gr])
             );
 
             chi_route_decode #(
@@ -525,6 +622,7 @@ module chi_top #(
             wire [NODE_ID_W-1:0] rsp_tgt_for_route;
             wire [NODE_ID_W-1:0] dat_tgt_for_route;
             wire [DAT_W-1:0]     hn_dat_src_flit;
+            wire [`CHI_DAT_QOS_W-1:0] dat_qos_for_arb;
             wire                 hn_dat_src_valid;
             wire                 dat_both_valid;
             wire                 mem_dat_wins;
@@ -562,6 +660,8 @@ module chi_top #(
             assign rsp_node_in_valid[HN_NODE_ID] = hn_tx_rsp_valid[gh];
             assign rsp_node_in_flit[HN_NODE_ID*RSP_W +: RSP_W] =
                    hn_tx_rsp_flit[gh*RSP_W +: RSP_W];
+            assign rsp_qos_flat[HN_NODE_ID*QOS_W +: QOS_W] =
+                   hn_tx_rsp_flit[gh*RSP_W + RSP_QOS_LSB +: QOS_W];
             assign hn_tx_rsp_lcrdv[gh] = rsp_node_in_valid[HN_NODE_ID] &&
                                           rsp_node_in_ready[HN_NODE_ID];
 
@@ -575,12 +675,22 @@ module chi_top #(
             assign hn_dat_src_flit  = tx_dat_wins ?
                                       hn_tx_dat_flit[gh*DAT_W +: DAT_W] :
                                       hn_mem_dat_flit[gh*DAT_W +: DAT_W];
+            assign dat_qos_for_arb =
+                   hn_dat_src_flit[DAT_QOS_LSB +: `CHI_DAT_QOS_W];
             assign dat_node_in_valid[HN_NODE_ID] = hn_dat_src_valid;
             assign dat_node_in_flit[HN_NODE_ID*DAT_W +: DAT_W] = hn_dat_src_flit;
             assign hn_tx_dat_lcrdv[gh] = dat_node_in_ready[HN_NODE_ID] &&
                                           tx_dat_wins;
             assign hn_mem_dat_ready[gh] = dat_node_in_ready[HN_NODE_ID] &&
                                            mem_dat_wins;
+
+            if (QOS_W > `CHI_DAT_QOS_W) begin : gen_dat_qos_wide
+                assign dat_qos_flat[HN_NODE_ID*QOS_W +: QOS_W] =
+                       {{(QOS_W-`CHI_DAT_QOS_W){1'b0}}, dat_qos_for_arb};
+            end else begin : gen_dat_qos_narrow
+                assign dat_qos_flat[HN_NODE_ID*QOS_W +: QOS_W] =
+                       dat_qos_for_arb[QOS_W-1:0];
+            end
 
             always @(posedge clk_int or negedge rstn) begin
                 if (!rstn) begin
@@ -630,7 +740,7 @@ module chi_top #(
                 .NUM_RN(NUM_RN),
                 .NUM_SN(NUM_SN),
                 .SN_BASE_ID(SN_BASE_ID),
-                .DATA_WIDTH(DATA_WIDTH),
+                .DATA_WIDTH(DAT_DATA_W),
                 .ADDR_WIDTH(ADDR_WIDTH),
                 .NODE_ID_W(NODE_ID_W),
                 .TXN_ID_W(TXN_ID_W),
@@ -644,8 +754,11 @@ module chi_top #(
                 .WRITE_TRACKER_DEPTH(HN_WRITE_TRACKER_DEPTH),
                 .READ_TRACKER_DEPTH(HN_READ_TRACKER_DEPTH),
                 .SNOOP_TRACKER_DEPTH(HN_SNOOP_TRACKER_DEPTH),
+                .HN_NUM_SLOTS(HN_NUM_SLOTS),
                 .ENABLE_PERF(ENABLE_PERF),
-                .ENABLE_LLC_ECC(HN_ENABLE_LLC_ECC)
+                .ENABLE_LLC_ECC(HN_ENABLE_LLC_ECC),
+                .WRITE_THROUGH_NO_ALLOCATE(EXTERNAL_L1_WRITE_THROUGH_NO_ALLOCATE),
+                .FUNCTIONAL_TIMEOUT(FUNCTIONAL_TIMEOUT)
             ) u_hn_f (
                 .clk(clk_int),
                 .rstn(rstn),
@@ -666,6 +779,7 @@ module chi_top #(
                 .tx_rsp_lcrdv(hn_tx_rsp_lcrdv[gh]),
                 .tx_snp_valid(hn_tx_snp_valid[gh]),
                 .tx_snp_flit(hn_tx_snp_flit[gh*SNP_W +: SNP_W]),
+                .tx_snp_tgt_id(hn_tx_snp_tgt_id[gh*NODE_ID_W +: NODE_ID_W]),
                 .tx_snp_lcrdv(hn_tx_snp_lcrdv[gh]),
                 .tx_dat_valid(hn_tx_dat_valid[gh]),
                 .tx_dat_flit(hn_tx_dat_flit[gh*DAT_W +: DAT_W]),
@@ -680,7 +794,9 @@ module chi_top #(
                 .ecc_single_event(hn_ecc_single_event[gh]),
                 .ecc_double_event(hn_ecc_double_event[gh]),
                 .cfg_excl_timeout(cfg_excl_timeout),
-                .exclusive_fail_event(hn_exclusive_fail_event[gh])
+                .exclusive_fail_event(hn_exclusive_fail_event[gh]),
+                .watchdog_event(hn_watchdog_event[gh]),
+                .busy(hn_busy[gh])
             );
 
             chi_route_decode #(
@@ -739,7 +855,7 @@ module chi_top #(
             ) u_snp_route (
                 .valid(hn_tx_snp_valid[gh]),
                 .addr({ADDR_WIDTH{1'b0}}),
-                .tgt_id(hn_tx_snp_flit[gh*SNP_W + SNP_TGT_LSB +: NODE_ID_W]),
+                .tgt_id(hn_tx_snp_tgt_id[gh*NODE_ID_W +: NODE_ID_W]),
                 .cfg_region_valid(1'b0),
                 .cfg_hnf_base({ADDR_WIDTH{1'b0}}),
                 .cfg_hnf_end({ADDR_WIDTH{1'b0}}),
@@ -808,6 +924,7 @@ module chi_top #(
             localparam integer REQ_TGT_IDX = NUM_HN + gs;
             wire [NODE_ID_W-1:0] rsp_tgt_for_route;
             wire [NODE_ID_W-1:0] dat_tgt_for_route;
+            wire [`CHI_DAT_QOS_W-1:0] dat_qos_for_arb;
             wire [NODE_ID_W-1:0] route_id_unused_rsp;
             wire [NODE_ID_W-1:0] route_id_unused_dat;
             wire route_error_unused_rsp;
@@ -820,14 +937,26 @@ module chi_top #(
             assign rsp_node_in_valid[SN_NODE_ID] = sn_tx_rsp_valid[gs];
             assign rsp_node_in_flit[SN_NODE_ID*RSP_W +: RSP_W] =
                    sn_tx_rsp_flit[gs*RSP_W +: RSP_W];
+            assign rsp_qos_flat[SN_NODE_ID*QOS_W +: QOS_W] =
+                   sn_tx_rsp_flit[gs*RSP_W + RSP_QOS_LSB +: QOS_W];
             assign sn_tx_rsp_lcrdv[gs] = rsp_node_in_valid[SN_NODE_ID] &&
                                           rsp_node_in_ready[SN_NODE_ID];
 
             assign dat_node_in_valid[SN_NODE_ID] = sn_tx_dat_valid[gs];
             assign dat_node_in_flit[SN_NODE_ID*DAT_W +: DAT_W] =
                    sn_tx_dat_flit[gs*DAT_W +: DAT_W];
+            assign dat_qos_for_arb =
+                   sn_tx_dat_flit[gs*DAT_W + DAT_QOS_LSB +: `CHI_DAT_QOS_W];
             assign sn_tx_dat_lcrdv[gs] = dat_node_in_valid[SN_NODE_ID] &&
                                           dat_node_in_ready[SN_NODE_ID];
+
+            if (QOS_W > `CHI_DAT_QOS_W) begin : gen_dat_qos_wide
+                assign dat_qos_flat[SN_NODE_ID*QOS_W +: QOS_W] =
+                       {{(QOS_W-`CHI_DAT_QOS_W){1'b0}}, dat_qos_for_arb};
+            end else begin : gen_dat_qos_narrow
+                assign dat_qos_flat[SN_NODE_ID*QOS_W +: QOS_W] =
+                       dat_qos_for_arb[QOS_W-1:0];
+            end
 
             assign rsp_tgt_for_route = sn_tx_rsp_flit[gs*RSP_W + RSP_TGT_LSB +: NODE_ID_W];
             assign dat_tgt_for_route = sn_tx_dat_flit[gs*DAT_W + DAT_TGT_LSB +: NODE_ID_W];
@@ -835,6 +964,7 @@ module chi_top #(
             chi_sn_f #(
                 .NODE_ID(SN_NODE_ID),
                 .DATA_WIDTH(DATA_WIDTH),
+                .DAT_DATA_W(DAT_DATA_W),
                 .ADDR_WIDTH(ADDR_WIDTH),
                 .NODE_ID_W(NODE_ID_W),
                 .TXN_ID_W(TXN_ID_W),
@@ -881,7 +1011,8 @@ module chi_top #(
                 .axi_wlast(axi_wlast[gs]),
                 .axi_bvalid(axi_bvalid[gs]),
                 .axi_bready(axi_bready[gs]),
-                .axi_bresp(axi_bresp[gs*2 +: 2])
+                .axi_bresp(axi_bresp[gs*2 +: 2]),
+                .busy(sn_busy[gs])
             );
 
             chi_route_decode #(
@@ -961,16 +1092,19 @@ module chi_top #(
 
             assign req_tgt_ready[REQ_TGT_IDX] = mn_rx_req_ready[gm];
             assign rsp_node_out_ready[MN_NODE_ID] = mn_rx_rsp_ready[gm];
-            assign dat_node_out_ready[MN_NODE_ID] = 1'b1;
+            assign dat_node_out_ready[MN_NODE_ID] = mn_rx_dat_ready[gm];
 
             assign rsp_node_in_valid[MN_NODE_ID] = mn_tx_rsp_valid[gm];
             assign rsp_node_in_flit[MN_NODE_ID*RSP_W +: RSP_W] =
                    mn_tx_rsp_flit[gm*RSP_W +: RSP_W];
+            assign rsp_qos_flat[MN_NODE_ID*QOS_W +: QOS_W] =
+                   mn_tx_rsp_flit[gm*RSP_W + RSP_QOS_LSB +: QOS_W];
             assign mn_tx_rsp_lcrdv[gm] = rsp_node_in_valid[MN_NODE_ID] &&
                                           rsp_node_in_ready[MN_NODE_ID];
 
             assign dat_node_in_valid[MN_NODE_ID] = 1'b0;
             assign dat_node_in_flit[MN_NODE_ID*DAT_W +: DAT_W] = {DAT_W{1'b0}};
+            assign dat_qos_flat[MN_NODE_ID*QOS_W +: QOS_W] = {QOS_W{1'b0}};
 
             assign snp_src_valid[SNP_SRC_IDX] = mn_tx_snp_valid[gm];
             assign snp_src_flit[SNP_SRC_IDX*SNP_W +: SNP_W] =
@@ -981,17 +1115,19 @@ module chi_top #(
                                           snp_src_ready[SNP_SRC_IDX];
 
             assign rsp_tgt_for_route = mn_tx_rsp_flit[gm*RSP_W + RSP_TGT_LSB +: NODE_ID_W];
-            assign snp_tgt_for_route = mn_tx_snp_flit[gm*SNP_W + SNP_TGT_LSB +: NODE_ID_W];
+            assign snp_tgt_for_route = mn_tx_snp_tgt_id[gm*NODE_ID_W +: NODE_ID_W];
 
             chi_hn_i_mn #(
                 .NODE_ID(MN_NODE_ID),
                 .RN_BASE_ID(RN_BASE_ID),
                 .NUM_RN(NUM_RN),
                 .ADDR_WIDTH(ADDR_WIDTH),
+                .DAT_DATA_W(DAT_DATA_W),
                 .NODE_ID_W(NODE_ID_W),
                 .TXN_ID_W(TXN_ID_W),
                 .QOS_W(QOS_W),
-                .DBID_W(DBID_W)
+                .DBID_W(DBID_W),
+                .FUNCTIONAL_TIMEOUT(FUNCTIONAL_TIMEOUT)
             ) u_hn_i_mn (
                 .clk(clk_int),
                 .rstn(rstn),
@@ -1005,12 +1141,18 @@ module chi_top #(
                 .rx_rsp_flit(rsp_node_out_flit[MN_NODE_ID*RSP_W +: RSP_W]),
                 .rx_rsp_ready(mn_rx_rsp_ready[gm]),
                 .rx_rsp_lcrdv(mn_rx_rsp_lcrdv_unused[gm]),
+                .rx_dat_valid(dat_node_out_valid[MN_NODE_ID]),
+                .rx_dat_flit(dat_node_out_flit[MN_NODE_ID*DAT_W +: DAT_W]),
+                .rx_dat_ready(mn_rx_dat_ready[gm]),
                 .tx_snp_valid(mn_tx_snp_valid[gm]),
                 .tx_snp_flit(mn_tx_snp_flit[gm*SNP_W +: SNP_W]),
+                .tx_snp_tgt_id(mn_tx_snp_tgt_id[gm*NODE_ID_W +: NODE_ID_W]),
                 .tx_snp_lcrdv(mn_tx_snp_lcrdv[gm]),
                 .tx_rsp_valid(mn_tx_rsp_valid[gm]),
                 .tx_rsp_flit(mn_tx_rsp_flit[gm*RSP_W +: RSP_W]),
-                .tx_rsp_lcrdv(mn_tx_rsp_lcrdv[gm])
+                .tx_rsp_lcrdv(mn_tx_rsp_lcrdv[gm]),
+                .watchdog_event(mn_watchdog_event[gm]),
+                .busy(mn_busy[gm])
             );
 
             chi_route_decode #(
@@ -1089,7 +1231,7 @@ module chi_top #(
         .NUM_REQ_TGT(NUM_REQ_TGT),
         .NUM_SNP_SRC(NUM_SNP_SRC),
         .ADDR_WIDTH(ADDR_WIDTH),
-        .DATA_WIDTH(DATA_WIDTH),
+        .DATA_WIDTH(DAT_DATA_W),
         .NODE_ID_W(NODE_ID_W),
         .TXN_ID_W(TXN_ID_W),
         .QOS_W(QOS_W),
@@ -1101,8 +1243,10 @@ module chi_top #(
         .clk(clk_int),
         .rstn(rstn),
         .clear(fabric_clear),
+        .busy(fabric_busy),
         .req_qos_flat(req_qos_flat),
-        .node_qos_flat(node_qos_flat),
+        .rsp_qos_flat(rsp_qos_flat),
+        .dat_qos_flat(dat_qos_flat),
         .snp_qos_flat(snp_qos_flat),
         .cfg_qos_age_shift(cfg_qos_age_shift),
         .cfg_qos_age_max(cfg_qos_age_max),

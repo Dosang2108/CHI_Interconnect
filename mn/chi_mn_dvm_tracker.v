@@ -9,7 +9,9 @@ module chi_mn_dvm_tracker #(
     parameter NODE_ID_W      = `CHI_DEFAULT_NODE_ID_W,
     parameter TXN_ID_W       = `CHI_DEFAULT_TXN_ID_W,
     parameter QOS_W          = `CHI_DEFAULT_QOS_W,
-    parameter TIMEOUT_CYCLES = 1024
+    parameter TIMEOUT_CYCLES = 1024,
+    // 0: watchdog pulse only; 1: legacy functional timeout_fire.
+    parameter FUNCTIONAL_TIMEOUT = 0
 )(
     input                    clk,
     input                    rstn,
@@ -38,7 +40,8 @@ module chi_mn_dvm_tracker #(
     output     [NUM_RN-1:0]  active_wait_mask,
     output                   all_sent,
     output                   all_acked,
-    output                   timeout_fire
+    output                   timeout_fire,
+    output                   watchdog
 );
     `include "../common/chi_clog2.vh"
 localparam TIMEOUT_W = (TIMEOUT_CYCLES <= 2) ? 1 :
@@ -62,7 +65,9 @@ localparam TIMEOUT_W = (TIMEOUT_CYCLES <= 2) ? 1 :
     assign active_wait_mask = wait_mask_q;
     assign all_sent = (send_mask_q == {NUM_RN{1'b0}});
     assign all_acked = (wait_mask_q == {NUM_RN{1'b0}});
-    assign timeout_fire = valid_q && (age_q >= TIMEOUT_VALUE);
+    assign timeout_fire = (FUNCTIONAL_TIMEOUT != 0) && valid_q &&
+                          (age_q >= TIMEOUT_VALUE);
+    assign watchdog = valid_q && (age_q == TIMEOUT_VALUE - 1'b1);
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin

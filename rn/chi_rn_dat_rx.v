@@ -14,42 +14,52 @@ module chi_rn_dat_rx #(
 )(
     input                    clk,
     input                    rstn,
+    output                   busy,
     input                    rx_dat_valid,
-    input      [`CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W)-1:0] rx_dat_flit,
+    input      [`CHI_DAT_W(DATA_WIDTH,NODE_ID_W)-1:0] rx_dat_flit,
     output                   rx_dat_ready,
     output                   rx_dat_lcrdv,
     output                   data_valid,
     output     [DATA_WIDTH-1:0] data,
     output     [TXN_ID_W-1:0] txn_id,
     output     [NODE_ID_W-1:0] src_id,
+    output     [NODE_ID_W-1:0] home_nid,
     output     [1:0]         resp_err,
     output     [2:0]         resp,
+    output     [DBID_W-1:0]  dbid,
     output                   line_valid,
     output     [LINE_BYTES*8-1:0] line_data
 );
+    `CHI_FLIT_PARAM_CHECK(`CHI_DEFAULT_ADDR_W,NODE_ID_W,TXN_ID_W,DBID_W,`CHI_FLIT_QOS_W,DATA_WIDTH)
     `include "../common/chi_clog2.vh"
     localparam BE_W = DATA_WIDTH / 8;
     localparam LINE_WIDTH = LINE_BYTES * 8;
     localparam BEATS = LINE_BYTES / BE_W;
     localparam ENTRY_W = (LINE_BUF_ENTRIES <= 2) ? 1 : `CHI_CLOG2(LINE_BUF_ENTRIES);
+    localparam DATAID_SHIFT = `CHI_DAT_DATAID_SHIFT(DATA_WIDTH);
+    localparam [`CHI_DAT_DATAID_W-1:0] DATAID_ALIGN_MASK = (1 << DATAID_SHIFT) - 1;
 
-    localparam DAT_RESPERR_LSB = `CHI_DAT_RESPERR_LSB;
-    localparam DAT_BE_LSB      = `CHI_DAT_BE_LSB;
-    localparam DAT_DATA_LSB    = `CHI_DAT_DATA_LSB(DATA_WIDTH);
-    localparam DAT_DATAID_LSB  = `CHI_DAT_DATAID_LSB(DATA_WIDTH);
-    localparam DAT_DBID_LSB    = `CHI_DAT_DBID_LSB(DATA_WIDTH);
-    localparam DAT_TXN_LSB     = `CHI_DAT_TXN_LSB(DATA_WIDTH,DBID_W);
-    localparam DAT_SRC_LSB     = `CHI_DAT_SRC_LSB(DATA_WIDTH,DBID_W,TXN_ID_W);
-    localparam DAT_TGT_LSB     = `CHI_DAT_TGT_LSB(DATA_WIDTH,DBID_W,TXN_ID_W,NODE_ID_W);
-    localparam DAT_RESP_LSB    = `CHI_DAT_RESP_LSB(DATA_WIDTH,DBID_W,TXN_ID_W,NODE_ID_W);
+    localparam DAT_RESPERR_LSB = `CHI_DAT_RESPERR_LSB(DATA_WIDTH,NODE_ID_W);
+    localparam DAT_BE_LSB      = `CHI_DAT_BE_LSB(DATA_WIDTH,NODE_ID_W);
+    localparam DAT_DATA_LSB    = `CHI_DAT_DATA_LSB(DATA_WIDTH,NODE_ID_W);
+    localparam DAT_DATAID_LSB  = `CHI_DAT_DATAID_LSB(DATA_WIDTH,NODE_ID_W);
+    localparam DAT_DBID_LSB    = `CHI_DAT_DBID_LSB(DATA_WIDTH,NODE_ID_W);
+    localparam DAT_TXN_LSB     = `CHI_DAT_TXN_LSB(DATA_WIDTH,NODE_ID_W);
+    localparam DAT_SRC_LSB     = `CHI_DAT_SRC_LSB(DATA_WIDTH,NODE_ID_W);
+    localparam DAT_TGT_LSB     = `CHI_DAT_TGT_LSB(DATA_WIDTH,NODE_ID_W);
+    localparam DAT_RESP_LSB    = `CHI_DAT_RESP_LSB(DATA_WIDTH,NODE_ID_W);
+    localparam DAT_HOME_NID_LSB = `CHI_DAT_HOME_NID_LSB(DATA_WIDTH,NODE_ID_W);
 
     wire                 dat_in_ready;
     wire                 dat_valid_buf;
-    wire [`CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W)-1:0] dat_flit_buf;
+    wire [`CHI_DAT_W(DATA_WIDTH,NODE_ID_W)-1:0] dat_flit_buf;
     wire                 dat_pop_unused;
     wire [15:0]          dat_used_unused;
-    wire [3:0]           data_id = dat_flit_buf[DAT_DATAID_LSB +: 4];
-    wire                 data_id_in_range = (data_id < BEATS);
+    wire [`CHI_DAT_DATAID_W-1:0] data_id = dat_flit_buf[DAT_DATAID_LSB +: `CHI_DAT_DATAID_W];
+    wire [3:0]           data_beat_idx = data_id >> DATAID_SHIFT;
+    wire                 data_id_valid =
+        ((data_id & DATAID_ALIGN_MASK) == {`CHI_DAT_DATAID_W{1'b0}}) &&
+        (data_beat_idx < BEATS);
     wire [DATA_WIDTH-1:0] flit_data = dat_flit_buf[DAT_DATA_LSB +: DATA_WIDTH];
     wire [TXN_ID_W-1:0]  flit_txn_id = dat_flit_buf[DAT_TXN_LSB +: TXN_ID_W];
     wire [1:0]           flit_resp_err = dat_flit_buf[DAT_RESPERR_LSB +: 2];
@@ -112,14 +122,14 @@ module chi_rn_dat_rx #(
     always @(*) begin
         updated_data = selected_data;
         updated_mask = selected_mask;
-        if (dat_valid_buf && target_valid && data_id_in_range) begin
-            updated_data[data_id*DATA_WIDTH +: DATA_WIDTH] = flit_data;
-            updated_mask[data_id] = 1'b1;
+        if (dat_valid_buf && target_valid && data_id_valid) begin
+            updated_data[data_beat_idx*DATA_WIDTH +: DATA_WIDTH] = flit_data;
+            updated_mask[data_beat_idx] = 1'b1;
         end
     end
 
     assign dat_consume_ready = !dat_valid_buf ||
-                               (target_valid && data_id_in_range);
+                               (target_valid && data_id_valid);
     assign rx_fire = dat_valid_buf && dat_consume_ready;
     assign line_complete_next = rx_fire && (&updated_mask);
 
@@ -129,8 +139,10 @@ module chi_rn_dat_rx #(
     assign data         = flit_data;
     assign txn_id       = flit_txn_id;
     assign src_id       = dat_flit_buf[DAT_SRC_LSB +: NODE_ID_W];
+    assign home_nid     = dat_flit_buf[DAT_HOME_NID_LSB +: NODE_ID_W];
     assign resp_err     = flit_resp_err;
     assign resp         = flit_resp;
+    assign dbid         = dat_flit_buf[DAT_DBID_LSB +: DBID_W];
     assign line_valid   = line_complete_next;
     assign line_data    = updated_data;
 
@@ -160,15 +172,15 @@ module chi_rn_dat_rx #(
 
     // synthesis translate_off
     always @(posedge clk) begin
-        if (rstn && dat_valid_buf && !data_id_in_range) begin
-            $display("chi_rn_dat_rx invalid DataID %0d", data_id);
+        if (rstn && dat_valid_buf && !data_id_valid) begin
+            $display("chi_rn_dat_rx invalid DAT DataID %0d", data_id);
             $stop;
         end
     end
     // synthesis translate_on
 
     chi_fifo #(
-        .WIDTH(`CHI_DAT_W(DATA_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W)),
+        .WIDTH(`CHI_DAT_W(DATA_WIDTH,NODE_ID_W)),
         .DEPTH(2)
     ) u_dat_fifo (
         .clk(clk),
@@ -183,4 +195,15 @@ module chi_rn_dat_rx #(
         .pop_pulse(dat_pop_unused),
         .used_count(dat_used_unused)
     );
+
+    reg     entry_busy;
+    integer busy_i;
+    always @(*) begin
+        entry_busy = 1'b0;
+        for (busy_i = 0; busy_i < LINE_BUF_ENTRIES; busy_i = busy_i + 1)
+            entry_busy = entry_busy | entry_valid_q[busy_i];
+    end
+
+    // A data beat is buffered or a line is still being assembled.
+    assign busy = dat_valid_buf || entry_busy;
 endmodule

@@ -26,6 +26,8 @@ module chi_csr_regs #(
     input                    ecc_double_event,
     input                    rn_parity_error_event,
     input                    exclusive_fail_event,
+    input                    watchdog_event,
+    input                    bist_reject_event,
     output                   err_irq,
 
     output reg               cfg_region_valid,
@@ -66,16 +68,22 @@ module chi_csr_regs #(
     localparam [ADDR_WIDTH-1:0] RESET_MN_BASE  = 32'hFFF0_0000;
     localparam [ADDR_WIDTH-1:0] RESET_MN_END   = 32'hFFFF_FFFF;
 
-    reg [3:0] err_status_q;
-    wire [3:0] err_event_vec;
+    // ERR_STATUS: [0] ECC single, [1] ECC double, [2] RN parity,
+    //             [3] exclusive fail, [4] node watchdog (transaction stuck
+    //             longer than the node timeout), [5] BIST init refused
+    //             because traffic was in flight. All W1C.
+    reg [5:0] err_status_q;
+    wire [5:0] err_event_vec;
     wire       csr_err_status_write;
     wire       csr_ctrl_write;
     integer   csr_hn_idx;
     integer   csr_rn_idx;
 
     assign csr_ready = 1'b1;
-    assign err_irq = err_status_q[1] | err_status_q[2];
-    assign err_event_vec = {exclusive_fail_event,
+    assign err_irq = err_status_q[1] | err_status_q[2] | err_status_q[4];
+    assign err_event_vec = {bist_reject_event,
+                            watchdog_event,
+                            exclusive_fail_event,
                             rn_parity_error_event,
                             ecc_double_event,
                             ecc_single_event};
@@ -99,7 +107,7 @@ module chi_csr_regs #(
             CSR_SNF_END:  csr_rdata[ADDR_WIDTH-1:0] = cfg_snf_end;
             CSR_MN_BASE:  csr_rdata[ADDR_WIDTH-1:0] = cfg_mn_base;
             CSR_MN_END:   csr_rdata[ADDR_WIDTH-1:0] = cfg_mn_end;
-            CSR_ERR_STATUS: csr_rdata[3:0] = err_status_q;
+            CSR_ERR_STATUS: csr_rdata[5:0] = err_status_q;
             CSR_EXCL_TIMEOUT: csr_rdata[15:0] = cfg_excl_timeout;
             CSR_MN_DRAIN_CYCLES: csr_rdata[15:0] = cfg_mn_drain_cycles;
             CSR_QOS_AGE_SHIFT: csr_rdata[7:0] = cfg_qos_age_shift;
@@ -122,7 +130,7 @@ module chi_csr_regs #(
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            err_status_q     <= 4'b0000;
+            err_status_q     <= 6'b000000;
             cfg_region_valid <= 1'b0;
             cfg_hnf_base     <= RESET_HNF_BASE;
             cfg_hnf_end      <= RESET_HNF_END;
@@ -141,7 +149,7 @@ module chi_csr_regs #(
             cfg_bist_init <= csr_ctrl_write && csr_wdata[3];
 
             err_status_q <= csr_err_status_write ?
-                            ((err_status_q & ~csr_wdata[3:0]) | err_event_vec) :
+                            ((err_status_q & ~csr_wdata[5:0]) | err_event_vec) :
                             (err_status_q | err_event_vec);
 
             if (csr_valid && csr_write) begin
