@@ -153,8 +153,8 @@ module tb_chi_snoop_txnid_3rn;
     reg [(1<<TXN_ID_W)-1:0] snp_busy [0:NUM_RN-1];
     integer mi;
 
-    wire                 hn_snp_fire = dut.gen_hn[0].u_hn_f.tx_snp_valid &&
-                                       dut.gen_hn[0].u_hn_f.tx_snp_lcrdv;
+    // tx_snp_valid is FLITV: every cycle it is high sends one snoop.
+    wire                 hn_snp_fire = dut.gen_hn[0].u_hn_f.tx_snp_valid;
     wire [NODE_ID_W-1:0] hn_snp_tgt  = dut.gen_hn[0].u_hn_f.tx_snp_tgt_id;
     wire [SNP_W-1:0]     hn_snp_flit = dut.gen_hn[0].u_hn_f.tx_snp_flit;
     wire                 hn_rsp_fire = dut.gen_hn[0].u_hn_f.rx_rsp_valid &&

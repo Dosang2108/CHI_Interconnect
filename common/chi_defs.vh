@@ -116,6 +116,7 @@
 // REQ Opcode is 7 bits (Opcode[6:0]); SNP Opcode is 5 bits.
 `define CHI_REQ_OPCODE_W      7
 `define CHI_SNP_OPCODE_W      5
+`define CHI_REQ_LCRD_RETURN   7'h00  // ReqLCrdReturn (link layer, B13.11)
 `define CHI_REQ_RD_NO_SNP     7'h04  // ReadNoSnp
 `define CHI_REQ_PCRD_RETURN   7'h05  // PCrdReturn
 `define CHI_REQ_RD_ONCE       7'h03  // ReadOnce
@@ -151,6 +152,7 @@
 // matching the real spec's DAT Opcode[3:0] exactly -- only values needed
 // correction, not field width.
 `define CHI_DAT_QOS_W          4
+`define CHI_DAT_OPCODE_LCRD_RETURN 4'h0 // DataLCrdReturn (link layer, B13.11)
 `define CHI_DAT_OPCODE_RD_DATA 4'h4  // CompData (was 0x1, which is SnpRespData)
 `define CHI_DAT_OPCODE_WDAT    4'h2  // CopyBackWriteData (already correct)
 `define CHI_DAT_OPCODE_SNP_DATA 4'h1 // SnpRespData (was 0x3, which is NonCopyBackWriteData)
@@ -159,6 +161,7 @@
 
 // SNP opcodes used by the compact RTL profile. Verified 2026-06-20
 // against Table B13.15 (SNP channel opcodes, pp.485-486).
+`define CHI_SNP_LCRD_RETURN   5'h00  // SnpLCrdReturn (link layer, B13.11)
 `define CHI_SNP_SHARED        5'h01  // SnpShared
 `define CHI_SNP_UNIQUE        5'h07  // SnpUnique
 // Real CHI has no opcode literally named "SnpInvalid". The closest real

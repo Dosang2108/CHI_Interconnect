@@ -15,6 +15,7 @@ param(
         "tb_chi_fabric_qos_xbar3",
         "tb_chi_rn_f_qos_xbar4",
         "tb_chi_snoop_txnid_3rn",
+        "tb_chi_link_layer",
         "tb_chi_random_stress"
     ),
     [string]$Prefix = "reg",

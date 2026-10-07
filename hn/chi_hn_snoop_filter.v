@@ -35,7 +35,14 @@ module chi_hn_snoop_filter #(
 
     output                   backinv_valid,
     output     [ADDR_WIDTH-1:0] backinv_addr,
-    output     [NUM_RN-1:0]  backinv_sharer_vec
+    output     [NUM_RN-1:0]  backinv_sharer_vec,
+
+    // Coherency domain (B15). An RN outside it is never reported and never
+    // stored as a sharer. When an RN leaves, a walk over every set removes
+    // it from the entries that still list it; scrub_pending[k] stays high
+    // until that walk is done.
+    input      [NUM_RN-1:0]  rn_in_domain,
+    output     [NUM_RN-1:0]  scrub_pending
 );
     `include "../common/chi_clog2.vh"
 
@@ -64,13 +71,29 @@ module chi_hn_snoop_filter #(
     reg                  op_update_invalidate_q;
     reg                  op_update_merge_q;
 
+    // Scrub walk: one set per pass through the op pipeline, behind updates
+    // and lookups.
+    localparam [SET_W-1:0] LAST_SET = SETS - 1;
+    reg                  op_is_scrub_q;
+    reg [NUM_RN-1:0]     in_domain_q;
+    reg [NUM_RN-1:0]     scrub_pending_q;
+    reg [NUM_RN-1:0]     scrub_cover_q;
+    reg [SET_W-1:0]      scrub_set_q;
+    reg                  scrub_walk_q;
+    wire [NUM_RN-1:0]    scrub_new = in_domain_q & ~rn_in_domain;
+
     wire                 update_fire = update_valid && update_ready;
     wire                 lookup_fire = lookup_valid && lookup_ready;
-    wire                 op_fire = update_fire || lookup_fire;
     wire                 op_busy = op_valid_q || op_data_valid_q;
+    wire                 scrub_fire = scrub_walk_q && !op_busy &&
+                                      !update_valid && !lookup_valid;
+    wire                 op_fire = update_fire || lookup_fire || scrub_fire;
     wire                 op_is_update_next = update_fire;
-    wire [SET_W-1:0]     op_set_next = update_fire ? update_set : lookup_set;
+    wire [SET_W-1:0]     op_set_next = update_fire ? update_set :
+                                       (lookup_fire ? lookup_set :
+                                                      scrub_set_q);
     wire [TAG_W-1:0]     op_tag_next = update_fire ? update_tag : lookup_tag;
+    wire                 scrub_commit = op_data_valid_q && op_is_scrub_q;
 
     wire [WAYS-1:0]      rd_valid_vec;
     wire [WAYS*TAG_W-1:0] rd_tag_flat;
@@ -106,21 +129,28 @@ module chi_hn_snoop_filter #(
     // A merge update keeps sharers already recorded for the line, so a
     // second ReadShared cannot drop the earlier sharer from the directory.
     assign op_update_sharer_eff =
-        (op_update_merge_q && op_hit_r) ?
-        (op_hit_sharer_vec_r | op_update_sharer_vec_q) :
-        op_update_sharer_vec_q;
+        ((op_update_merge_q && op_hit_r) ?
+         (op_hit_sharer_vec_r | op_update_sharer_vec_q) :
+         op_update_sharer_vec_q) & rn_in_domain;
 
     assign update_ready = !op_busy;
     assign lookup_ready = !op_busy && !update_valid;
 
+    // The result is held until the next lookup, and an RN can leave the
+    // domain meanwhile, so the sharers are masked again here. An entry
+    // whose sharers are all outside the domain reads as a miss.
     assign lookup_result_valid = result_valid_q;
-    assign lookup_hit = result_valid_q && result_hit_q;
+    assign lookup_hit = result_valid_q && result_hit_q &&
+                        ((result_sharer_vec_q & rn_in_domain) !=
+                         {NUM_RN{1'b0}});
     assign lookup_state = lookup_hit ? result_state_q : 2'b00;
-    assign lookup_sharer_vec = lookup_hit ? result_sharer_vec_q :
-                                            {NUM_RN{1'b0}};
-    assign backinv_valid = result_valid_q && result_backinv_valid_q;
+    assign lookup_sharer_vec = lookup_hit ?
+                               (result_sharer_vec_q & rn_in_domain) :
+                               {NUM_RN{1'b0}};
+    assign backinv_valid = result_valid_q && result_backinv_valid_q &&
+                           (backinv_sharer_vec != {NUM_RN{1'b0}});
     assign backinv_addr = result_backinv_addr_q;
-    assign backinv_sharer_vec = result_backinv_sharer_vec_q;
+    assign backinv_sharer_vec = result_backinv_sharer_vec_q & rn_in_domain;
 
     function [1:0] plru_victim_4way;
         input [2:0] plru;
@@ -181,6 +211,12 @@ module chi_hn_snoop_filter #(
                             op_update_state_q,
                             op_update_sharer_eff
                         };
+                    end else if (scrub_commit) begin
+                        meta_mem[op_set_q] <= {
+                            rd_meta_q[META_W-1:NUM_RN],
+                            rd_meta_q[META_SHARER_LSB +: NUM_RN] &
+                            rn_in_domain
+                        };
                     end
                 end
             end
@@ -207,6 +243,10 @@ module chi_hn_snoop_filter #(
                             valid_mem[op_set_q] <=
                                 (op_update_sharer_eff != {NUM_RN{1'b0}});
                         end
+                    end else if (scrub_commit &&
+                                 ((rd_meta_q[META_SHARER_LSB +: NUM_RN] &
+                                   rn_in_domain) == {NUM_RN{1'b0}})) begin
+                        valid_mem[op_set_q] <= 1'b0;
                     end
                 end
             end
@@ -229,7 +269,7 @@ module chi_hn_snoop_filter #(
                 op_hit_way_r = scan_i[WAY_W-1:0];
                 op_hit_state_r = rd_state_flat[scan_i*2 +: 2];
                 op_hit_sharer_vec_r =
-                    rd_sharer_flat[scan_i*NUM_RN +: NUM_RN];
+                    rd_sharer_flat[scan_i*NUM_RN +: NUM_RN] & rn_in_domain;
             end
 
             if (!op_free_r && !rd_valid_vec[scan_i]) begin
@@ -246,12 +286,13 @@ module chi_hn_snoop_filter #(
         op_victim_tag_r =
             rd_tag_flat[op_victim_way_r*TAG_W +: TAG_W];
         op_victim_sharer_vec_r =
-            rd_sharer_flat[op_victim_way_r*NUM_RN +: NUM_RN];
+            rd_sharer_flat[op_victim_way_r*NUM_RN +: NUM_RN] & rn_in_domain;
     end
 
     always @(posedge clk) begin
         if (rstn && !clear) begin
             if (op_fire) begin
+                op_is_scrub_q <= scrub_fire;
                 op_is_update_q <= op_is_update_next;
                 op_set_q <= op_set_next;
                 op_tag_q <= op_tag_next;
@@ -261,7 +302,7 @@ module chi_hn_snoop_filter #(
                 op_update_merge_q <= update_merge;
             end
 
-            if (op_data_valid_q && !op_is_update_q) begin
+            if (op_data_valid_q && !op_is_update_q && !op_is_scrub_q) begin
                 result_hit_q <= op_hit_r;
                 result_state_q <= op_hit_state_r;
                 result_sharer_vec_q <= op_hit_sharer_vec_r;
@@ -303,7 +344,7 @@ module chi_hn_snoop_filter #(
                         plru_q[op_set_q] <=
                             plru_touch_4way(plru_q[op_set_q],
                                             op_update_way_r);
-                end else begin
+                end else if (!op_is_scrub_q) begin
                     result_valid_q <= 1'b1;
                     if (op_hit_r)
                         plru_q[op_set_q] <=
@@ -312,6 +353,45 @@ module chi_hn_snoop_filter #(
             end
         end
     end
+
+    // An RN that leaves the coherency domain is removed from every entry by
+    // a walk over all sets. A walk covers the RNs that were already outside
+    // when it started; an RN that leaves during a walk gets the next one.
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            in_domain_q <= {NUM_RN{1'b0}};
+            scrub_pending_q <= {NUM_RN{1'b0}};
+            scrub_cover_q <= {NUM_RN{1'b0}};
+            scrub_set_q <= {SET_W{1'b0}};
+            scrub_walk_q <= 1'b0;
+        end else if (clear) begin
+            in_domain_q <= rn_in_domain;
+            scrub_pending_q <= {NUM_RN{1'b0}};
+            scrub_cover_q <= {NUM_RN{1'b0}};
+            scrub_set_q <= {SET_W{1'b0}};
+            scrub_walk_q <= 1'b0;
+        end else begin
+            in_domain_q <= rn_in_domain;
+            scrub_pending_q <= scrub_pending_q | scrub_new;
+            if (!scrub_walk_q) begin
+                if ((scrub_pending_q | scrub_new) != {NUM_RN{1'b0}}) begin
+                    scrub_walk_q <= 1'b1;
+                    scrub_set_q <= {SET_W{1'b0}};
+                    scrub_cover_q <= scrub_pending_q | scrub_new;
+                end
+            end else if (scrub_commit) begin
+                if (op_set_q == LAST_SET) begin
+                    scrub_walk_q <= 1'b0;
+                    scrub_pending_q <= (scrub_pending_q | scrub_new) &
+                                       ~scrub_cover_q;
+                end else begin
+                    scrub_set_q <= op_set_q + 1'b1;
+                end
+            end
+        end
+    end
+
+    assign scrub_pending = scrub_pending_q | scrub_new;
 
     // synthesis translate_off
     always @(posedge clk) begin
@@ -332,5 +412,6 @@ module chi_hn_snoop_filter #(
     // A lookup/update is in progress. result_valid_q is not work in flight:
     // it holds the last lookup result until the next lookup, and HN only
     // reads it in HN_ST_WAIT_SF, which already keeps HN busy.
-    assign busy = op_busy;
+    // A scrub walk is work in flight too.
+    assign busy = op_busy || scrub_walk_q;
 endmodule

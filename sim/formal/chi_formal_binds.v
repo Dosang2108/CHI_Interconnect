@@ -11,7 +11,8 @@
 
 bind chi_link_layer chi_credit_no_deadlock_formal #(
     .CREDIT_W(CREDIT_W),
-    .MAX_CREDIT(INIT_CREDIT),
+    // Credits come from the receiver (B14.2.1), at most 15 per channel.
+    .MAX_CREDIT(15),
     .STALL_BOUND(2048)
 ) u_b5_credit_no_deadlock (
     .clk(clk),
@@ -57,7 +58,8 @@ bind chi_hn_f chi_snpresp_window_formal #(
 ) u_b5_snpresp_window (
     .clk(clk),
     .rstn(rstn),
-    .snp_fire(tx_snp_valid && tx_snp_lcrdv),
+    // FLITV in RUN is a snoop; in DEACTIVATE it is an LCrdReturn flit.
+    .snp_fire(tx_snp_valid && tx_link_run),
     .snpresp_fire(rsp_sink_valid &&
                   (rsp_opcode == `CHI_RSP_SNP_RESP) &&
                   rsp_sink_pop)

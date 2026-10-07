@@ -60,6 +60,13 @@ module chi_rn_cache #(
     output                   cpu_local,
     output                   cpu_flushed,
 
+    // Flush of the whole cache, used to leave the coherency domain. While
+    // flush_valid is high every line is dropped, way by way: a dirty line
+    // goes to the victim queue (WriteBackFull), a clean one is just
+    // invalidated. flush_done rises once every way has been visited.
+    input                    flush_valid,
+    output                   flush_done,
+
     // Dirty victims waiting for their WriteBackFull to be issued. A snoop
     // must still see them (the RN-F checks these after a cache miss).
     output     [1:0]         victim_valid,
@@ -79,10 +86,13 @@ module chi_rn_cache #(
     localparam META_STATE_LSB  = 1;
     localparam META_TAG_LSB    = 4;
 
-    localparam ST_IDLE        = 2'd0;
-    localparam ST_SNOOP_READ  = 2'd1;
-    localparam ST_UPDATE_READ = 2'd2;
-    localparam ST_CPU_READ    = 2'd3;
+    localparam ST_IDLE        = 3'd0;
+    localparam ST_SNOOP_READ  = 3'd1;
+    localparam ST_UPDATE_READ = 3'd2;
+    localparam ST_CPU_READ    = 3'd3;
+    localparam ST_FLUSH_READ  = 3'd4;
+    localparam [INDEX_W-1:0] LAST_SET = SETS - 1;
+    localparam [WAY_W-1:0]   LAST_WAY = WAYS - 1;
 
     // CPU access kinds. "Dirty" is UD/SD, "owned" is UC/UD.
     //   READ     any hit is served locally.
@@ -154,7 +164,7 @@ module chi_rn_cache #(
     wire [WAYS*META_W-1:0]       rd_meta_flat;
     wire [WAYS*LINE_WIDTH-1:0]   rd_data_flat;
 
-    reg [1:0]          state_q;
+    reg [2:0]          state_q;
 
     reg                snoop_pending_q;
     reg [ADDR_WIDTH-1:0] snoop_pending_addr_q;
@@ -285,15 +295,43 @@ module chi_rn_cache #(
         (evict_count_q == 2'd0) &&
         cpu_valid;
     wire                 cpu_commit_fire = (state_q == ST_CPU_READ);
+
+    // Flush walk: one way per visit. It has the lowest priority and, like a
+    // CPU access, starts only with an empty victim queue so a dirty line
+    // always has room.
+    reg [INDEX_W-1:0]    flush_set_q;
+    reg [WAY_W-1:0]      flush_way_q;
+    reg                  flush_done_q;
+    wire                 start_flush =
+        (state_q == ST_IDLE) &&
+        !snoop_commit_wait_q &&
+        (upd_count_q == 2'd0) &&
+        !snoop_pending_q &&
+        !snoop_valid &&
+        (evict_count_q == 2'd0) &&
+        !cpu_valid &&
+        flush_valid && !flush_done_q;
+    wire                 flush_commit_fire = (state_q == ST_FLUSH_READ);
+    wire [2:0]           flush_line_state =
+        rd_meta_flat[flush_way_q*META_W + META_STATE_LSB +: 3];
+    wire                 flush_line_dirty =
+        rd_valid_vec[flush_way_q] && dirty_state(flush_line_state);
+    wire                 evict_push =
+        (update_commit_fire && update_needs_evict) ||
+        (cpu_commit_fire && cpu_flush_r) ||
+        (flush_commit_fire && flush_line_dirty);
+
     wire                 ram_read_valid = start_update ||
                                           start_pending_snoop ||
                                           start_direct_snoop ||
-                                          start_cpu;
+                                          start_cpu ||
+                                          start_flush;
     wire [INDEX_W-1:0]   ram_read_set =
         start_update ? upd_addr_q[upd_head_q][6 +: INDEX_W] :
         (start_pending_snoop ? snoop_pending_addr_q[6 +: INDEX_W] :
          (start_direct_snoop ? snoop_index :
-          cpu_addr[6 +: INDEX_W]));
+          (start_cpu ? cpu_addr[6 +: INDEX_W] :
+           flush_set_q)));
 
     wire [2:0] snoop_commit_state_next =
         ((snoop_opcode_q == `CHI_SNP_SHARED) &&
@@ -335,6 +373,7 @@ module chi_rn_cache #(
     assign cpu_line = cpu_line_q;
     assign cpu_local = cpu_local_q;
     assign cpu_flushed = cpu_flushed_q;
+    assign flush_done = flush_done_q;
 
     assign snoop_send_data = snoop_dirty &&
                              ((snoop_opcode_q == `CHI_SNP_SHARED) ||
@@ -411,6 +450,9 @@ module chi_rn_cache #(
                                  (cpu_flush_r || cpu_inv_r) &&
                                  (cpu_way_r == WAY_ID)) begin
                         valid_mem[cpu_index_q] <= 1'b0;
+                    end else if (flush_commit_fire &&
+                                 (flush_way_q == WAY_ID)) begin
+                        valid_mem[flush_set_q] <= 1'b0;
                     end else if (snoop_commit_fire &&
                                  (snoop_way_q == WAY_ID)) begin
                         valid_mem[snoop_index_q] <= snoop_commit_valid_next;
@@ -574,6 +616,17 @@ module chi_rn_cache #(
                 evict_state_q[evict_tail_q] <= update_victim_state_r;
             end
 
+            if (flush_commit_fire && flush_line_dirty) begin
+                evict_addr_q[evict_tail_q] <= {
+                    rd_meta_flat[flush_way_q*META_W + META_TAG_LSB +: TAG_W],
+                    flush_set_q,
+                    6'b0
+                };
+                evict_data_q[evict_tail_q] <=
+                    rd_data_flat[flush_way_q*LINE_WIDTH +: LINE_WIDTH];
+                evict_state_q[evict_tail_q] <= flush_line_state;
+            end
+
             if (start_cpu) begin
                 cpu_index_q <= cpu_addr[6 +: INDEX_W];
                 cpu_tag_q <= cpu_addr[ADDR_WIDTH-1 -: TAG_W];
@@ -698,13 +751,11 @@ module chi_rn_cache #(
                 evict_head_q <= evict_head_q + 1'b1;
             end
 
-            if ((update_commit_fire && update_needs_evict) ||
-                (cpu_commit_fire && cpu_flush_r)) begin
+            if (evict_push) begin
                 evict_tail_q <= evict_tail_q + 1'b1;
             end
 
-            case ({((update_commit_fire && update_needs_evict) ||
-                    (cpu_commit_fire && cpu_flush_r)), evict_pop})
+            case ({evict_push, evict_pop})
                 2'b10: evict_count_q <= evict_count_q + 1'b1;
                 2'b01: evict_count_q <= evict_count_q - 1'b1;
                 default: evict_count_q <= evict_count_q;
@@ -724,7 +775,13 @@ module chi_rn_cache #(
                         state_q <= ST_SNOOP_READ;
                     end else if (start_cpu) begin
                         state_q <= ST_CPU_READ;
+                    end else if (start_flush) begin
+                        state_q <= ST_FLUSH_READ;
                     end
+                end
+
+                ST_FLUSH_READ: begin
+                    state_q <= ST_IDLE;
                 end
 
                 ST_CPU_READ: begin
@@ -758,6 +815,28 @@ module chi_rn_cache #(
                     state_q <= ST_IDLE;
                 end
             endcase
+        end
+    end
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            flush_set_q <= {INDEX_W{1'b0}};
+            flush_way_q <= {WAY_W{1'b0}};
+            flush_done_q <= 1'b0;
+        end else if (clear || !flush_valid) begin
+            flush_set_q <= {INDEX_W{1'b0}};
+            flush_way_q <= {WAY_W{1'b0}};
+            flush_done_q <= 1'b0;
+        end else if (flush_commit_fire) begin
+            if (flush_way_q == LAST_WAY) begin
+                flush_way_q <= {WAY_W{1'b0}};
+                if (flush_set_q == LAST_SET)
+                    flush_done_q <= 1'b1;
+                else
+                    flush_set_q <= flush_set_q + 1'b1;
+            end else begin
+                flush_way_q <= flush_way_q + 1'b1;
+            end
         end
     end
 

@@ -28,6 +28,8 @@ module chi_csr_regs #(
     input                    exclusive_fail_event,
     input                    watchdog_event,
     input                    bist_reject_event,
+    input      [NUM_RN-1:0]  sysco_req,
+    input      [NUM_RN-1:0]  sysco_ack,
     output                   err_irq,
 
     output reg               cfg_region_valid,
@@ -43,6 +45,7 @@ module chi_csr_regs #(
     output reg [15:0]        cfg_mn_drain_cycles,
     output reg [7:0]         cfg_qos_age_shift,
     output reg [7:0]         cfg_qos_age_max,
+    output reg [NUM_RN-1:0]  cfg_sysco_connect,
     output reg               cfg_bist_init
 );
     localparam CSR_CTRL      = 8'h00;
@@ -53,6 +56,10 @@ module chi_csr_regs #(
     localparam CSR_MN_BASE   = 8'h30;
     localparam CSR_MN_END    = 8'h38;
     localparam CSR_ERR_STATUS   = 8'h40;
+    // SYSCO_CTRL: bit k asks RN k to be in the coherency domain (reset 1).
+    // SYSCO_STATUS (read only): [15:0] SYSCOREQ, [31:16] SYSCOACK per RN.
+    localparam CSR_SYSCO_CTRL   = 8'h58;
+    localparam CSR_SYSCO_STATUS = 8'h60;
     localparam CSR_EXCL_TIMEOUT = 8'h68;
     localparam CSR_MN_DRAIN_CYCLES = 8'h70;
     localparam CSR_QOS_AGE_SHIFT = 8'h78;
@@ -108,6 +115,11 @@ module chi_csr_regs #(
             CSR_MN_BASE:  csr_rdata[ADDR_WIDTH-1:0] = cfg_mn_base;
             CSR_MN_END:   csr_rdata[ADDR_WIDTH-1:0] = cfg_mn_end;
             CSR_ERR_STATUS: csr_rdata[5:0] = err_status_q;
+            CSR_SYSCO_CTRL: csr_rdata[NUM_RN-1:0] = cfg_sysco_connect;
+            CSR_SYSCO_STATUS: begin
+                csr_rdata[NUM_RN-1:0] = sysco_req;
+                csr_rdata[16 +: NUM_RN] = sysco_ack;
+            end
             CSR_EXCL_TIMEOUT: csr_rdata[15:0] = cfg_excl_timeout;
             CSR_MN_DRAIN_CYCLES: csr_rdata[15:0] = cfg_mn_drain_cycles;
             CSR_QOS_AGE_SHIFT: csr_rdata[7:0] = cfg_qos_age_shift;
@@ -144,6 +156,7 @@ module chi_csr_regs #(
             cfg_mn_drain_cycles <= 16'd4;
             cfg_qos_age_shift <= `CHI_DEFAULT_QOS_AGE_SHIFT;
             cfg_qos_age_max   <= `CHI_DEFAULT_QOS_AGE_MAX;
+            cfg_sysco_connect <= {NUM_RN{1'b1}};
             cfg_bist_init    <= 1'b0;
         end else begin
             cfg_bist_init <= csr_ctrl_write && csr_wdata[3];
@@ -165,6 +178,7 @@ module chi_csr_regs #(
                     CSR_SNF_END:  cfg_snf_end  <= csr_wdata[ADDR_WIDTH-1:0];
                     CSR_MN_BASE:  cfg_mn_base  <= csr_wdata[ADDR_WIDTH-1:0];
                     CSR_MN_END:   cfg_mn_end   <= csr_wdata[ADDR_WIDTH-1:0];
+                    CSR_SYSCO_CTRL: cfg_sysco_connect <= csr_wdata[NUM_RN-1:0];
                     CSR_EXCL_TIMEOUT: cfg_excl_timeout <=
                         (csr_wdata[15:0] == 16'd0) ? 16'd1 :
                                                       csr_wdata[15:0];

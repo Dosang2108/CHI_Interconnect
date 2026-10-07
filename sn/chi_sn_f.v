@@ -35,10 +35,12 @@ module chi_sn_f #(
     output                   tx_rsp_valid,
     output     [`CHI_RSP_W(NODE_ID_W)-1:0] tx_rsp_flit,
     input                    tx_rsp_lcrdv,
+    output                   tx_rsp_flitpend,
 
     output                   tx_dat_valid,
     output     [`CHI_DAT_W(DAT_DATA_W,NODE_ID_W)-1:0] tx_dat_flit,
     input                    tx_dat_lcrdv,
+    output                   tx_dat_flitpend,
 
     output                   axi_arvalid,
     input                    axi_arready,
@@ -66,8 +68,18 @@ module chi_sn_f #(
     output                   axi_bready,
     input      [1:0]         axi_bresp,
     // A buffered request/data flit, an AXI burst or a TX flit in flight.
-    output                   busy
+    output                   busy,
+
+    // Transmit link activation (B14.5.1): the node asks for its transmit
+    // link while link_want is high and returns its L-Credits once it drops.
+    input                    link_want,
+    output                   tx_linkactivereq,
+    input                    tx_linkactiveack
 );
+    wire tx_link_run;
+    wire tx_link_deact;
+    wire tx_rsp_pending;
+    wire tx_dat_pending;
     localparam REQ_W = `CHI_REQ_W(NODE_ID_W);
     localparam RSP_W = `CHI_RSP_W(NODE_ID_W);
     localparam DAT_W = `CHI_DAT_W(DAT_DATA_W,NODE_ID_W);
@@ -188,6 +200,16 @@ module chi_sn_f #(
         .axi_bresp(axi_bresp)
     );
 
+    chi_link_active_tx u_tx_link_active (
+        .clk(clk),
+        .rstn(rstn),
+        .want(link_want),
+        .linkactivereq(tx_linkactivereq),
+        .linkactiveack(tx_linkactiveack),
+        .run(tx_link_run),
+        .deact(tx_link_deact)
+    );
+
     chi_link_layer #(
         .FLIT_W(RSP_W),
         .INIT_CREDIT(INIT_CRD)
@@ -201,6 +223,10 @@ module chi_sn_f #(
         .tx_out_valid(tx_rsp_valid),
         .tx_out_flit(tx_rsp_flit),
         .tx_out_lcrdv(tx_rsp_lcrdv),
+        .tx_out_flitpend(tx_rsp_flitpend),
+        .link_run(tx_link_run),
+        .link_deact(tx_link_deact),
+        .tx_pending(tx_rsp_pending),
         .rx_in_valid(1'b0),
         .rx_in_flit({RSP_W{1'b0}}),
         .rx_in_lcrdv(),
@@ -226,6 +252,10 @@ module chi_sn_f #(
         .tx_out_valid(tx_dat_valid),
         .tx_out_flit(tx_dat_flit),
         .tx_out_lcrdv(tx_dat_lcrdv),
+        .tx_out_flitpend(tx_dat_flitpend),
+        .link_run(tx_link_run),
+        .link_deact(tx_link_deact),
+        .tx_pending(tx_dat_pending),
         .rx_in_valid(1'b0),
         .rx_in_flit({DAT_W{1'b0}}),
         .rx_in_lcrdv(),
@@ -239,5 +269,5 @@ module chi_sn_f #(
     );
 
     assign busy = reqbuf_valid || wbuf_valid || bridge_busy ||
-                  tx_rsp_valid || tx_dat_valid;
+                  tx_rsp_pending || tx_dat_pending;
 endmodule

@@ -42,12 +42,24 @@ module chi_hn_i_mn #(
     output     [`CHI_SNP_W(NODE_ID_W)-1:0] tx_snp_flit,
     output     [NODE_ID_W-1:0] tx_snp_tgt_id,
     input                    tx_snp_lcrdv,
+    output                   tx_snp_flitpend,
 
     output                   tx_rsp_valid,
     output     [`CHI_RSP_W(NODE_ID_W)-1:0] tx_rsp_flit,
     input                    tx_rsp_lcrdv,
+    output                   tx_rsp_flitpend,
     output                   watchdog_event,
-    output                   busy
+    output                   busy,
+
+    // Transmit link activation (B14.5.1): the node asks for its transmit
+    // link while link_want is high and returns its L-Credits once it drops.
+    input                    link_want,
+    output                   tx_linkactivereq,
+    input                    tx_linkactiveack,
+
+    // Coherency domain (B15), see chi_mn_dvm.
+    input      [NUM_RN-1:0]  rn_in_domain,
+    output     [NUM_RN-1:0]  sysco_quiet
 );
     chi_mn_dvm #(
         .NODE_ID(NODE_ID),
@@ -81,10 +93,17 @@ module chi_hn_i_mn #(
         .tx_snp_flit(tx_snp_flit),
         .tx_snp_tgt_id(tx_snp_tgt_id),
         .tx_snp_lcrdv(tx_snp_lcrdv),
+        .tx_snp_flitpend(tx_snp_flitpend),
         .tx_rsp_valid(tx_rsp_valid),
         .tx_rsp_flit(tx_rsp_flit),
         .tx_rsp_lcrdv(tx_rsp_lcrdv),
+        .tx_rsp_flitpend(tx_rsp_flitpend),
         .watchdog_event(watchdog_event),
-        .busy(busy)
+        .busy(busy),
+        .link_want(link_want),
+        .tx_linkactivereq(tx_linkactivereq),
+        .tx_linkactiveack(tx_linkactiveack),
+        .rn_in_domain(rn_in_domain),
+        .sysco_quiet(sysco_quiet)
     );
 endmodule

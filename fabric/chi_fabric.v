@@ -42,6 +42,7 @@ module chi_fabric #(
     output     [NUM_REQ_SRC-1:0] req_in_pop_pulse,
     input      [NUM_REQ_SRC*NUM_REQ_TGT-1:0] req_route_onehot,
     output     [NUM_REQ_TGT-1:0] req_out_valid,
+    output     [NUM_REQ_TGT-1:0] req_out_pend,
     input      [NUM_REQ_TGT-1:0] req_out_ready,
     output     [NUM_REQ_TGT*`CHI_REQ_W(NODE_ID_W)-1:0] req_out_flit,
 
@@ -51,6 +52,7 @@ module chi_fabric #(
     output     [NUM_NODES-1:0] rsp_in_pop_pulse,
     input      [NUM_NODES*NUM_NODES-1:0] rsp_route_onehot,
     output     [NUM_NODES-1:0] rsp_out_valid,
+    output     [NUM_NODES-1:0] rsp_out_pend,
     input      [NUM_NODES-1:0] rsp_out_ready,
     output     [NUM_NODES*`CHI_RSP_W(NODE_ID_W)-1:0] rsp_out_flit,
 
@@ -60,6 +62,7 @@ module chi_fabric #(
     output     [NUM_SNP_SRC-1:0] snp_in_pop_pulse,
     input      [NUM_SNP_SRC*NUM_RN-1:0] snp_route_onehot,
     output     [NUM_RN-1:0] snp_out_valid,
+    output     [NUM_RN-1:0] snp_out_pend,
     input      [NUM_RN-1:0] snp_out_ready,
     output     [NUM_RN*`CHI_SNP_W(NODE_ID_W)-1:0] snp_out_flit,
 
@@ -69,6 +72,7 @@ module chi_fabric #(
     output     [NUM_NODES-1:0] dat_in_pop_pulse,
     input      [NUM_NODES*NUM_NODES-1:0] dat_route_onehot,
     output     [NUM_NODES-1:0] dat_out_valid,
+    output     [NUM_NODES-1:0] dat_out_pend,
     input      [NUM_NODES-1:0] dat_out_ready,
     output     [NUM_NODES*`CHI_DAT_W(DATA_WIDTH,NODE_ID_W)-1:0] dat_out_flit
 );
@@ -106,6 +110,7 @@ module chi_fabric #(
         .cfg_qos_age_shift(cfg_qos_age_shift),
         .cfg_qos_age_max(cfg_qos_age_max),
         .out_valid(req_out_valid),
+        .out_pend(req_out_pend),
         .out_ready(req_out_ready),
         .out_flit(req_out_flit)
     );
@@ -132,6 +137,7 @@ module chi_fabric #(
         .cfg_qos_age_shift(cfg_qos_age_shift),
         .cfg_qos_age_max(cfg_qos_age_max),
         .out_valid(rsp_out_valid),
+        .out_pend(rsp_out_pend),
         .out_ready(rsp_out_ready),
         .out_flit(rsp_out_flit)
     );
@@ -158,6 +164,7 @@ module chi_fabric #(
         .cfg_qos_age_shift(cfg_qos_age_shift),
         .cfg_qos_age_max(cfg_qos_age_max),
         .out_valid(snp_out_valid),
+        .out_pend(snp_out_pend),
         .out_ready(snp_out_ready),
         .out_flit(snp_out_flit)
     );
@@ -184,6 +191,7 @@ module chi_fabric #(
         .cfg_qos_age_shift(cfg_qos_age_shift),
         .cfg_qos_age_max(cfg_qos_age_max),
         .out_valid(dat_out_valid),
+        .out_pend(dat_out_pend),
         .out_ready(dat_out_ready),
         .out_flit(dat_out_flit)
     );

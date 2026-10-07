@@ -134,6 +134,15 @@ module tb_CHI;
     localparam [DATA_WIDTH-1:0] XR_DATA0 = 32'hC0DE_5400;
     localparam [DATA_WIDTH-1:0] XR_DATA1 = 32'hC0DE_5411;
     localparam [ADDR_WIDTH-1:0] MU_ADDR = 32'h0002_A000;
+    // 3.4: lines and data of the coherency-domain test (T57).
+    localparam [ADDR_WIDTH-1:0] SYSCO_DIRTY_ADDR  = 32'h0002_B000;
+    localparam [ADDR_WIDTH-1:0] SYSCO_CLEAN_ADDR  = 32'h0002_B400;
+    localparam [ADDR_WIDTH-1:0] SYSCO_SHARED_ADDR = 32'h0002_B800;
+    localparam [DATA_WIDTH-1:0] SYSCO_DATA0 = 32'h5C00_0AA0;
+    localparam [DATA_WIDTH-1:0] SYSCO_DATA1 = 32'h5C01_0BB1;
+    localparam [DATA_WIDTH-1:0] SYSCO_DATA2 = 32'h5C02_0CC2;
+    localparam [7:0] CSR_SYSCO_CTRL   = 8'h58;
+    localparam [7:0] CSR_SYSCO_STATUS = 8'h60;
     localparam [DATA_WIDTH-1:0] A1_DATA0 = 32'hA1D0_0000;
     localparam [DATA_WIDTH-1:0] A1_DATA1 = 32'hA1D1_1111;
     localparam [ADDR_WIDTH-1:0] P0_LLC_ADDR = 32'h0001_F000;
@@ -479,7 +488,7 @@ module tb_CHI;
                 dvm_mon_dat_data = df[`CHI_DAT_DATA_LSB(DAT_DATA_W,NODE_ID_W) +: 64];
             end
             rf = dut.mn_tx_rsp_flit[0 +: `CHI_RSP_W(NODE_ID_W)];
-            if (dut.mn_tx_rsp_valid[0] && dut.mn_tx_rsp_lcrdv[0]) begin
+            if (dut.mn_tx_rsp_valid[0]) begin
                 if (rf[`CHI_RSP_OPCODE_LSB(NODE_ID_W) +: `CHI_RSP_OPCODE_W] == `CHI_RSP_DBID)
                     dvm_mon_dbid = dvm_mon_dbid + 1;
                 if (rf[`CHI_RSP_OPCODE_LSB(NODE_ID_W) +: `CHI_RSP_OPCODE_W] == `CHI_RSP_COMP)
@@ -506,6 +515,27 @@ module tb_CHI;
     longint    mu_mon_cycle = 0;
     longint    mu_mon_ack_cycle = 0;
     longint    mu_mon_snp0_cycle = 0;
+
+    // 3.4, while sysco_mon_on: snoops handed to each RN, and the snoop-filter
+    // entries that still listed an RN when its SYSCOACK fell.
+    reg     sysco_mon_on = 1'b0;
+    integer sysco_mon_snp [0:NUM_RN-1];
+    integer sysco_mon_listed [0:NUM_RN-1];
+    reg [NUM_RN-1:0] sysco_mon_ack_q = {NUM_RN{1'b0}};
+
+    always @(posedge clk) begin : sysco_mon
+        integer i;
+        if (rstn && sysco_mon_on) begin
+            for (i = 0; i < NUM_RN; i = i + 1) begin
+                if (dut.snp_rn_out_valid[i] && dut.snp_rn_out_ready[i])
+                    sysco_mon_snp[i] = sysco_mon_snp[i] + 1;
+                if (sysco_mon_ack_q[i] && !dut.rn_syscoack[i])
+                    sysco_mon_listed[i] = sysco_mon_listed[i] +
+                                          sf_entries_listing_rn(i);
+            end
+        end
+        sysco_mon_ack_q = dut.rn_syscoack;
+    end
 
     task automatic mu_mon_clear;
         begin
@@ -616,11 +646,9 @@ module tb_CHI;
             next_busy = sn_txn_busy;
             // A write ends at its Comp (the DBIDResp before it does not).
             if (dut.gen_sn[0].u_sn_f.tx_rsp_valid &&
-                dut.gen_sn[0].u_sn_f.tx_rsp_lcrdv &&
                 (dut.gen_sn[0].u_sn_f.tx_rsp_flit[`CHI_RSP_OPCODE_LSB(NODE_ID_W) +: `CHI_RSP_OPCODE_W] == `CHI_RSP_COMP))
                 next_busy[dut.gen_sn[0].u_sn_f.tx_rsp_flit[`CHI_RSP_TXN_LSB(NODE_ID_W) +: TXN_ID_W]] = 1'b0;
             if (dut.gen_sn[0].u_sn_f.tx_dat_valid &&
-                dut.gen_sn[0].u_sn_f.tx_dat_lcrdv &&
                 (dut.gen_sn[0].u_sn_f.tx_dat_flit[`CHI_DAT_DATAID_LSB(DAT_DATA_W,NODE_ID_W) +: `CHI_DAT_DATAID_W] == DAT_BEATS - 1))
                 next_busy[dut.gen_sn[0].u_sn_f.tx_dat_flit[`CHI_DAT_TXN_LSB(DAT_DATA_W,NODE_ID_W) +: TXN_ID_W]] = 1'b0;
             if (dut.gen_sn[0].u_sn_f.rx_req_valid &&
@@ -676,7 +704,6 @@ module tb_CHI;
             direct_fwd_cd_resp <= 3'd0;
         end else if (direct_fwd_monitor_active) begin
             if (dut.gen_rn[0].u_rn_f.tx_rsp_valid &&
-                dut.gen_rn[0].u_rn_f.tx_rsp_lcrdv &&
                 (dut.gen_rn[0].u_rn_f.tx_rsp_flit[`CHI_RSP_OPCODE_LSB(NODE_ID_W) +: `CHI_RSP_OPCODE_W] ==
                  `CHI_RSP_SNP_RESP_FWD) &&
                 (dut.gen_rn[0].u_rn_f.tx_rsp_flit[`CHI_RSP_SRC_LSB(NODE_ID_W) +: NODE_ID_W] ==
@@ -691,7 +718,6 @@ module tb_CHI;
             end
 
             if (dut.gen_rn[0].u_rn_f.tx_dat_valid &&
-                dut.gen_rn[0].u_rn_f.tx_dat_lcrdv &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_OPCODE_LSB(DAT_DATA_W,NODE_ID_W) +: 4] ==
                  `CHI_DAT_OPCODE_RD_DATA) &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_SRC_LSB(DAT_DATA_W,NODE_ID_W) +: NODE_ID_W] ==
@@ -706,7 +732,6 @@ module tb_CHI;
             end
 
             if (dut.gen_rn[0].u_rn_f.tx_dat_valid &&
-                dut.gen_rn[0].u_rn_f.tx_dat_lcrdv &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_SRC_LSB(DAT_DATA_W,NODE_ID_W) +: NODE_ID_W] ==
                  RN0_NODE_ID_VEC) &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_TGT_LSB(DAT_DATA_W,NODE_ID_W) +: NODE_ID_W] ==
@@ -717,7 +742,6 @@ module tb_CHI;
             end
 
             if (dut.gen_rn[0].u_rn_f.tx_dat_valid &&
-                dut.gen_rn[0].u_rn_f.tx_dat_lcrdv &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_OPCODE_LSB(DAT_DATA_W,NODE_ID_W) +: 4] ==
                  `CHI_DAT_OPCODE_RD_DATA) &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_SRC_LSB(DAT_DATA_W,NODE_ID_W) +: NODE_ID_W] ==
@@ -730,7 +754,6 @@ module tb_CHI;
             end
 
             if (dut.gen_rn[0].u_rn_f.tx_dat_valid &&
-                dut.gen_rn[0].u_rn_f.tx_dat_lcrdv &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_OPCODE_LSB(DAT_DATA_W,NODE_ID_W) +: 4] ==
                  `CHI_DAT_OPCODE_RD_DATA) &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_SRC_LSB(DAT_DATA_W,NODE_ID_W) +: NODE_ID_W] ==
@@ -741,7 +764,6 @@ module tb_CHI;
             end
 
             if (dut.gen_hn[0].u_hn_f.tx_dat_valid &&
-                dut.gen_hn[0].u_hn_f.tx_dat_lcrdv &&
                 (dut.gen_hn[0].u_hn_f.tx_dat_flit[`CHI_DAT_OPCODE_LSB(DAT_DATA_W,NODE_ID_W) +: 4] ==
                  `CHI_DAT_OPCODE_RD_DATA) &&
                 (dut.gen_hn[0].u_hn_f.tx_dat_flit[`CHI_DAT_SRC_LSB(DAT_DATA_W,NODE_ID_W) +: NODE_ID_W] ==
@@ -752,7 +774,6 @@ module tb_CHI;
             end
 
             if (dut.gen_rn[0].u_rn_f.tx_dat_valid &&
-                dut.gen_rn[0].u_rn_f.tx_dat_lcrdv &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_OPCODE_LSB(DAT_DATA_W,NODE_ID_W) +: 4] ==
                  `CHI_DAT_OPCODE_SNP_DATA) &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_SRC_LSB(DAT_DATA_W,NODE_ID_W) +: NODE_ID_W] ==
@@ -765,7 +786,6 @@ module tb_CHI;
             end
 
             if (dut.gen_rn[0].u_rn_f.tx_dat_valid &&
-                dut.gen_rn[0].u_rn_f.tx_dat_lcrdv &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_SRC_LSB(DAT_DATA_W,NODE_ID_W) +: NODE_ID_W] ==
                  RN0_NODE_ID_VEC) &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_TGT_LSB(DAT_DATA_W,NODE_ID_W) +: NODE_ID_W] ==
@@ -776,7 +796,6 @@ module tb_CHI;
             end
 
             if (dut.gen_rn[0].u_rn_f.tx_dat_valid &&
-                dut.gen_rn[0].u_rn_f.tx_dat_lcrdv &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_OPCODE_LSB(DAT_DATA_W,NODE_ID_W) +: 4] ==
                  `CHI_DAT_OPCODE_SNP_DATA) &&
                 (dut.gen_rn[0].u_rn_f.tx_dat_flit[`CHI_DAT_SRC_LSB(DAT_DATA_W,NODE_ID_W) +: NODE_ID_W] ==
@@ -821,7 +840,6 @@ module tb_CHI;
             end
 
             if (dut.gen_rn[1].u_rn_f.tx_rsp_valid &&
-                dut.gen_rn[1].u_rn_f.tx_rsp_lcrdv &&
                 (dut.gen_rn[1].u_rn_f.tx_rsp_flit[`CHI_RSP_OPCODE_LSB(NODE_ID_W) +: `CHI_RSP_OPCODE_W] ==
                  `CHI_RSP_COMP_ACK) &&
                 (dut.gen_rn[1].u_rn_f.tx_rsp_flit[`CHI_RSP_SRC_LSB(NODE_ID_W) +: NODE_ID_W] ==
@@ -832,7 +850,6 @@ module tb_CHI;
             end
 
             if (dut.gen_rn[1].u_rn_f.tx_rsp_valid &&
-                dut.gen_rn[1].u_rn_f.tx_rsp_lcrdv &&
                 (dut.gen_rn[1].u_rn_f.tx_rsp_flit[`CHI_RSP_OPCODE_LSB(NODE_ID_W) +: `CHI_RSP_OPCODE_W] ==
                  `CHI_RSP_COMP_ACK) &&
                 (dut.gen_rn[1].u_rn_f.tx_rsp_flit[`CHI_RSP_SRC_LSB(NODE_ID_W) +: NODE_ID_W] ==
@@ -1578,42 +1595,47 @@ module tb_CHI;
             if (test_failed) return;
             wait_cycles(2);
 
+            // Both sources request, nothing reaches the DAT link, and every
+            // cycle counts as a taken flit so the priority keeps flipping.
             @(negedge clk);
-            force dut.hn_tx_dat_valid[0] = 1'b1;
-            force dut.hn_mem_dat_valid[0] = 1'b1;
-            force dut.hn_tx_dat_flit[0 +: DAT_W] = {DAT_W{1'b0}};
-            force dut.hn_mem_dat_flit[0 +: DAT_W] = {DAT_W{1'b0}};
-            force dut.dat_node_in_ready[HN0_NODE_ID] = 1'b0;
-            force dut.dat_node_in_pop_pulse[HN0_NODE_ID] = 1'b1;
+            force dut.gen_hn[0].u_hn_f.tx_dat_link_valid = 1'b1;
+            force dut.gen_hn[0].u_hn_f.mem_dat_valid = 1'b1;
+            force dut.gen_hn[0].u_hn_f.tx_dat_link_flit = {DAT_W{1'b0}};
+            force dut.gen_hn[0].u_hn_f.mem_dat_flit = {DAT_W{1'b0}};
+            force dut.gen_hn[0].u_hn_f.dat_arb_valid = 1'b0;
+            force dut.gen_hn[0].u_hn_f.dat_arb_ready = 1'b0;
+            force dut.gen_hn[0].u_hn_f.dat_arb_take = 1'b1;
 
             tx_count = 0;
             mem_count = 0;
             for (i = 0; i < A1_ARB_CYCLES; i = i + 1) begin
                 @(negedge clk);
-                if (dut.gen_hn[0].tx_dat_wins)
+                if (dut.gen_hn[0].u_hn_f.tx_dat_wins)
                     tx_count = tx_count + 1;
-                if (dut.gen_hn[0].mem_dat_wins)
+                if (dut.gen_hn[0].u_hn_f.mem_dat_wins)
                     mem_count = mem_count + 1;
-                if (dut.gen_hn[0].tx_dat_wins && dut.gen_hn[0].mem_dat_wins) begin
+                if (dut.gen_hn[0].u_hn_f.tx_dat_wins && dut.gen_hn[0].u_hn_f.mem_dat_wins) begin
                     tb_fail("A1 DAT arbiter granted both sources");
                     return;
                 end
-                if (!dut.gen_hn[0].tx_dat_wins && !dut.gen_hn[0].mem_dat_wins) begin
+                if (!dut.gen_hn[0].u_hn_f.tx_dat_wins && !dut.gen_hn[0].u_hn_f.mem_dat_wins) begin
                     tb_fail("A1 DAT arbiter granted no source under contention");
                     return;
                 end
-                if (dut.hn_tx_dat_lcrdv[0] || dut.hn_mem_dat_ready[0]) begin
+                if (dut.gen_hn[0].u_hn_f.tx_dat_link_ready ||
+                    dut.gen_hn[0].u_hn_f.mem_dat_ready) begin
                     tb_fail("A1 DAT arbiter test leaked a credit handshake");
                     return;
                 end
             end
 
-            release dut.dat_node_in_pop_pulse[HN0_NODE_ID];
-            release dut.dat_node_in_ready[HN0_NODE_ID];
-            release dut.hn_mem_dat_flit[0 +: DAT_W];
-            release dut.hn_tx_dat_flit[0 +: DAT_W];
-            release dut.hn_mem_dat_valid[0];
-            release dut.hn_tx_dat_valid[0];
+            release dut.gen_hn[0].u_hn_f.dat_arb_take;
+            release dut.gen_hn[0].u_hn_f.dat_arb_ready;
+            release dut.gen_hn[0].u_hn_f.dat_arb_valid;
+            release dut.gen_hn[0].u_hn_f.mem_dat_flit;
+            release dut.gen_hn[0].u_hn_f.tx_dat_link_flit;
+            release dut.gen_hn[0].u_hn_f.mem_dat_valid;
+            release dut.gen_hn[0].u_hn_f.tx_dat_link_valid;
 
             csr_write64(8'h00, 64'h0000_0007);
             if (test_failed) return;
@@ -1640,7 +1662,7 @@ module tb_CHI;
         begin
             tb_test_start("T01_A1_DAT_RR_RESET",
                           "hn_dat_round_robin_reset_check",
-                          "Mid-test reset restores HN DAT arbiter tx-first priority and next pop toggles to mem");
+                          "Mid-test reset restores HN DAT arbiter tx-first priority and the next taken flit toggles to mem");
             @(negedge clk);
             rstn = 1'b0;
             csr_valid = 1'b0;
@@ -1668,35 +1690,37 @@ module tb_CHI;
             wait_cycles(2);
 
             @(negedge clk);
-            force dut.hn_tx_dat_valid[0] = 1'b1;
-            force dut.hn_mem_dat_valid[0] = 1'b1;
-            force dut.hn_tx_dat_flit[0 +: DAT_W] = {DAT_W{1'b0}};
-            force dut.hn_mem_dat_flit[0 +: DAT_W] = {DAT_W{1'b0}};
-            force dut.dat_node_in_ready[HN0_NODE_ID] = 1'b0;
-            force dut.dat_node_in_pop_pulse[HN0_NODE_ID] = 1'b0;
+            force dut.gen_hn[0].u_hn_f.tx_dat_link_valid = 1'b1;
+            force dut.gen_hn[0].u_hn_f.mem_dat_valid = 1'b1;
+            force dut.gen_hn[0].u_hn_f.tx_dat_link_flit = {DAT_W{1'b0}};
+            force dut.gen_hn[0].u_hn_f.mem_dat_flit = {DAT_W{1'b0}};
+            force dut.gen_hn[0].u_hn_f.dat_arb_valid = 1'b0;
+            force dut.gen_hn[0].u_hn_f.dat_arb_ready = 1'b0;
+            force dut.gen_hn[0].u_hn_f.dat_arb_take = 1'b0;
             #1;
 
-            if (!dut.gen_hn[0].tx_dat_wins || dut.gen_hn[0].mem_dat_wins) begin
+            if (!dut.gen_hn[0].u_hn_f.tx_dat_wins || dut.gen_hn[0].u_hn_f.mem_dat_wins) begin
                 tb_fail("A1 DAT arbiter reset did not select tx_dat first");
                 return;
             end
 
-            force dut.dat_node_in_pop_pulse[HN0_NODE_ID] = 1'b1;
+            force dut.gen_hn[0].u_hn_f.dat_arb_take = 1'b1;
             @(negedge clk);
-            if (dut.gen_hn[0].tx_dat_wins || !dut.gen_hn[0].mem_dat_wins) begin
+            if (dut.gen_hn[0].u_hn_f.tx_dat_wins || !dut.gen_hn[0].u_hn_f.mem_dat_wins) begin
                 tb_fail("A1 DAT arbiter did not toggle priority after reset pop");
                 return;
             end
 
-            release dut.dat_node_in_pop_pulse[HN0_NODE_ID];
-            release dut.dat_node_in_ready[HN0_NODE_ID];
-            release dut.hn_mem_dat_flit[0 +: DAT_W];
-            release dut.hn_tx_dat_flit[0 +: DAT_W];
-            release dut.hn_mem_dat_valid[0];
-            release dut.hn_tx_dat_valid[0];
+            release dut.gen_hn[0].u_hn_f.dat_arb_take;
+            release dut.gen_hn[0].u_hn_f.dat_arb_ready;
+            release dut.gen_hn[0].u_hn_f.dat_arb_valid;
+            release dut.gen_hn[0].u_hn_f.mem_dat_flit;
+            release dut.gen_hn[0].u_hn_f.tx_dat_link_flit;
+            release dut.gen_hn[0].u_hn_f.mem_dat_valid;
+            release dut.gen_hn[0].u_hn_f.tx_dat_link_valid;
 
             wait_cycles(2);
-            tb_test_pass("Reset selected tx_dat first, one pop selected mem_dat next");
+            tb_test_pass("Reset selected tx_dat first, one taken flit selected mem_dat next");
         end
     endtask
 
@@ -2192,6 +2216,11 @@ module tb_CHI;
                 tb_fail("chi_cg_en did not drop low after idle window");
                 return;
             end
+            // The clock may only stop with every link deactivated (B14.5.1).
+            if (dut.links_stopped !== 1'b1) begin
+                tb_fail("fabric clock gated with a link not in STOP");
+                return;
+            end
 
             ar_before = axi_ar_count;
             cpu_read_check(IOT_WAKE_ADDR,
@@ -2214,6 +2243,11 @@ module tb_CHI;
             if (dut.chi_cg_en !== 1'b0) begin
                 cg_busy_dump();
                 tb_fail("chi_cg_en did not return low after wake read drained");
+                return;
+            end
+            // The clock may only stop with every link deactivated (B14.5.1).
+            if (dut.links_stopped !== 1'b1) begin
+                tb_fail("fabric clock gated with a link not in STOP");
                 return;
             end
 
@@ -3547,11 +3581,11 @@ module tb_CHI;
         end
     end
     always @(posedge clk) begin
-        if (dut.rn_tx_req_valid[0] && dut.rn_tx_req_lcrdv[0]) begin
+        if (dut.rn_tx_req_valid[0]) begin
             a1_req_count[0] <= a1_req_count[0] + 1;
             a1_last_req_op[0] <= dut.gen_rn[0].u_rn_f.tx_req_flit[`CHI_REQ_OPCODE_LSB(NODE_ID_W) +: `CHI_REQ_OPCODE_W];
         end
-        if (dut.rn_tx_req_valid[1] && dut.rn_tx_req_lcrdv[1]) begin
+        if (dut.rn_tx_req_valid[1]) begin
             a1_req_count[1] <= a1_req_count[1] + 1;
             a1_last_req_op[1] <= dut.gen_rn[1].u_rn_f.tx_req_flit[`CHI_REQ_OPCODE_LSB(NODE_ID_W) +: `CHI_REQ_OPCODE_W];
         end
@@ -5285,6 +5319,178 @@ module tb_CHI;
         end
     endtask
 
+    // Number of HN0 snoop-filter entries that list RN rn_idx as a sharer.
+    function automatic integer sf_entries_listing_rn;
+        input integer rn_idx;
+        integer s;
+        integer n;
+        begin
+            n = 0;
+            for (s = 0; s < dut.gen_hn[0].u_hn_f.u_snoop_filter.SETS; s = s + 1) begin
+                if (dut.gen_hn[0].u_hn_f.u_snoop_filter.gen_way_ram[0].valid_mem[s] &&
+                    dut.gen_hn[0].u_hn_f.u_snoop_filter.gen_way_ram[0].meta_mem[s][rn_idx])
+                    n = n + 1;
+                if (dut.gen_hn[0].u_hn_f.u_snoop_filter.gen_way_ram[1].valid_mem[s] &&
+                    dut.gen_hn[0].u_hn_f.u_snoop_filter.gen_way_ram[1].meta_mem[s][rn_idx])
+                    n = n + 1;
+                if (dut.gen_hn[0].u_hn_f.u_snoop_filter.gen_way_ram[2].valid_mem[s] &&
+                    dut.gen_hn[0].u_hn_f.u_snoop_filter.gen_way_ram[2].meta_mem[s][rn_idx])
+                    n = n + 1;
+                if (dut.gen_hn[0].u_hn_f.u_snoop_filter.gen_way_ram[3].valid_mem[s] &&
+                    dut.gen_hn[0].u_hn_f.u_snoop_filter.gen_way_ram[3].meta_mem[s][rn_idx])
+                    n = n + 1;
+            end
+            sf_entries_listing_rn = n;
+        end
+    endfunction
+
+    // Wait until SYSCOREQ/SYSCOACK of RN rn_idx both read exp in
+    // SYSCO_STATUS.
+    task automatic sysco_wait_state;
+        input integer rn_idx;
+        input exp;
+        output reg ok;
+        reg [63:0] status;
+        integer t;
+        begin
+            ok = 1'b0;
+            for (t = 0; (t < MAX_WAIT) && !ok; t = t + 1) begin
+                csr_read_value(CSR_SYSCO_STATUS, status);
+                ok = (status[rn_idx] === exp) && (status[16 + rn_idx] === exp);
+            end
+        end
+    endtask
+
+    // 3.4: an RN leaves the coherency domain through SYSCO_CTRL. It must
+    // flush its cache first (dirty lines reach the home), the home must then
+    // neither list nor snoop it, and after it rejoins it is coherent again.
+    task automatic sysco_leave_domain_check;
+        reg ok;
+        reg [63:0] status;
+        integer listed;
+        integer i;
+        begin
+            tb_test_start("T57_SYSCO_RN_LEAVES_DOMAIN",
+                          "sysco_leave_domain_check",
+                          "RN0 flushes and leaves the coherency domain; RN1 uses its lines with no snoop to RN0; RN0 rejoins and is snooped again");
+
+            csr_read_value(CSR_SYSCO_STATUS, status);
+            if ((status[NUM_RN-1:0] !== {NUM_RN{1'b1}}) ||
+                (status[16 +: NUM_RN] !== {NUM_RN{1'b1}})) begin
+                tb_fail_str($sformatf("SYSCO_STATUS=0x%0h after reset; every RN must be in Coherency Enabled",
+                                      status));
+                return;
+            end
+
+            // RN0 holds a dirty line, a clean line of its own and a line it
+            // shares with RN1.
+            rn_make_dirty(0, SYSCO_DIRTY_ADDR, SYSCO_DATA0, "RN0 dirty line");
+            if (test_failed) return;
+            cpu_read_check_rn(0, SYSCO_CLEAN_ADDR, `CHI_CPU_OP_RD_SHARED,
+                              mem_pattern(SYSCO_CLEAN_ADDR, 0), "RN0 clean line");
+            if (test_failed) return;
+            cpu_read_check_rn(0, SYSCO_SHARED_ADDR, `CHI_CPU_OP_RD_SHARED,
+                              mem_pattern(SYSCO_SHARED_ADDR, 0), "RN0 shared line");
+            if (test_failed) return;
+            cpu_read_check_rn(1, SYSCO_SHARED_ADDR, `CHI_CPU_OP_RD_SHARED,
+                              mem_pattern(SYSCO_SHARED_ADDR, 0), "RN1 shared line");
+            if (test_failed) return;
+            wait_cycles(20);
+            listed = sf_entries_listing_rn(0);
+            if (listed < 3) begin
+                tb_fail_str($sformatf("snoop filter lists RN0 in %0d entries before it leaves, expected at least 3",
+                                      listed));
+                return;
+            end
+
+            for (i = 0; i < NUM_RN; i = i + 1) begin
+                sysco_mon_snp[i] = 0;
+                sysco_mon_listed[i] = 0;
+            end
+            sysco_mon_on = 1'b1;
+            csr_write64(CSR_SYSCO_CTRL, 64'h2);
+            sysco_wait_state(0, 1'b0, ok);
+            if (!ok) begin
+                csr_read_value(CSR_SYSCO_STATUS, status);
+                tb_fail_str($sformatf("RN0 did not reach Coherency Disabled, SYSCO_STATUS=0x%0h", status));
+                return;
+            end
+            csr_read_value(CSR_SYSCO_STATUS, status);
+            if (!status[1] || !status[17]) begin
+                tb_fail_str($sformatf("RN1 left the domain with RN0, SYSCO_STATUS=0x%0h", status));
+                return;
+            end
+            rn_cache_expect_state(0, SYSCO_DIRTY_ADDR, 1'b0, `CHI_STATE_I, "RN0 dirty line flushed");
+            if (test_failed) return;
+            rn_cache_expect_state(0, SYSCO_CLEAN_ADDR, 1'b0, `CHI_STATE_I, "RN0 clean line flushed");
+            if (test_failed) return;
+            rn_cache_expect_state(0, SYSCO_SHARED_ADDR, 1'b0, `CHI_STATE_I, "RN0 shared line flushed");
+            if (test_failed) return;
+            listed = sf_entries_listing_rn(0);
+            if ((listed != 0) || (sysco_mon_listed[0] != 0)) begin
+                tb_fail_str($sformatf("snoop filter lists RN0 in %0d entries now and listed it in %0d when SYSCOACK fell; expected 0 and 0",
+                                      listed, sysco_mon_listed[0]));
+                return;
+            end
+            if (cpu_req_ready[0] !== 1'b0) begin
+                tb_fail("RN0 accepts CPU requests outside the coherency domain");
+                return;
+            end
+
+            // RN1 works on RN0's old lines: it sees RN0's dirty data and
+            // nothing is sent to RN0, not even a SnpDVMOp.
+            cpu_read_check_rn(1, SYSCO_DIRTY_ADDR, `CHI_CPU_OP_RD_SHARED,
+                              SYSCO_DATA0, "RN1 reads the line RN0 wrote back");
+            if (test_failed) return;
+            cpu_read_check_rn(1, SYSCO_SHARED_ADDR, `CHI_CPU_OP_RD_UNIQUE,
+                              mem_pattern(SYSCO_SHARED_ADDR, 0), "RN1 ReadUnique of the old shared line");
+            if (test_failed) return;
+            rn_make_dirty(1, SYSCO_CLEAN_ADDR, SYSCO_DATA1, "RN1 writes RN0's old clean line");
+            if (test_failed) return;
+            cpu_op_resp_check_rn(1, 32'h0000_2340, `CHI_CPU_OP_DVM_OP,
+                                 32'h0000_00D1, "RN1 DVMOp with RN0 outside the domain");
+            if (test_failed) return;
+            wait_cycles(20);
+            if (sysco_mon_snp[0] != 0) begin
+                tb_fail_str($sformatf("%0d snoops reached RN0 outside the coherency domain", sysco_mon_snp[0]));
+                return;
+            end
+
+            // RN0 rejoins: it reads RN1's dirty data, and is snooped again.
+            csr_write64(CSR_SYSCO_CTRL, {{(64-NUM_RN){1'b0}}, {NUM_RN{1'b1}}});
+            sysco_wait_state(0, 1'b1, ok);
+            if (!ok) begin
+                csr_read_value(CSR_SYSCO_STATUS, status);
+                tb_fail_str($sformatf("RN0 did not return to Coherency Enabled, SYSCO_STATUS=0x%0h", status));
+                return;
+            end
+            cpu_read_check_rn(0, SYSCO_CLEAN_ADDR, `CHI_CPU_OP_RD_SHARED,
+                              SYSCO_DATA1, "RN0 reads RN1's dirty line after rejoining");
+            if (test_failed) return;
+            cpu_read_check_rn(0, SYSCO_DIRTY_ADDR, `CHI_CPU_OP_RD_SHARED,
+                              SYSCO_DATA0, "RN0 reads back its own old line");
+            if (test_failed) return;
+            cpu_op_resp_check_rn(1, SYSCO_CLEAN_ADDR, `CHI_CPU_OP_WR_UNIQUE,
+                                 SYSCO_DATA2, "RN1 store invalidates RN0's new copy");
+            if (test_failed) return;
+            rn_cache_expect_state(0, SYSCO_CLEAN_ADDR, 1'b0, `CHI_STATE_I,
+                                  "RN0 copy invalidated by RN1's store");
+            if (test_failed) return;
+            wait_cycles(20);
+            sysco_mon_on = 1'b0;
+            if (sysco_mon_snp[0] == 0) begin
+                tb_fail("RN0 was not snooped after it rejoined the coherency domain");
+                return;
+            end
+            cpu_read_check_rn(0, SYSCO_CLEAN_ADDR, `CHI_CPU_OP_RD_SHARED,
+                              SYSCO_DATA2, "RN0 reads RN1's second store");
+            if (test_failed) return;
+            wait_cycles(20);
+
+            tb_test_pass("RN0 flushed and left with no snoop reaching it; RN1 saw its data; RN0 rejoined coherent");
+        end
+    endtask
+
     task automatic dual_core_exclusive_cross_invalidate_check;
         integer timeout;
         begin
@@ -5430,8 +5636,8 @@ module tb_CHI;
             got1 = {DATA_WIDTH{1'b0}};
 
             @(negedge clk);
-            force dut.dat_node_in_ready[HN0_NODE_ID] = 1'b0;
-            force dut.dat_node_in_pop_pulse[HN0_NODE_ID] = 1'b0;
+            force dut.gen_hn[0].u_hn_f.dat_arb_valid = 1'b0;
+            force dut.gen_hn[0].u_hn_f.dat_arb_ready = 1'b0;
 
             cpu_req_addr[0*ADDR_WIDTH +: ADDR_WIDTH] = HN_SLOT_HIT_ADDR;
             cpu_req_op[0*4 +: 4] = `CHI_CPU_OP_RD_SHARED;
@@ -5474,8 +5680,8 @@ module tb_CHI;
             cpu_req_valid[1] = 1'b0;
 
             wait_cycles(80);
-            release dut.dat_node_in_pop_pulse[HN0_NODE_ID];
-            release dut.dat_node_in_ready[HN0_NODE_ID];
+            release dut.gen_hn[0].u_hn_f.dat_arb_ready;
+            release dut.gen_hn[0].u_hn_f.dat_arb_valid;
 
             timeout = 0;
             while (((responded[0] == 1'b0) || (responded[1] == 1'b0)) &&
@@ -5561,8 +5767,8 @@ module tb_CHI;
             got1 = {DATA_WIDTH{1'b0}};
 
             @(negedge clk);
-            force dut.dat_node_in_ready[HN0_NODE_ID] = 1'b0;
-            force dut.dat_node_in_pop_pulse[HN0_NODE_ID] = 1'b0;
+            force dut.gen_hn[0].u_hn_f.dat_arb_valid = 1'b0;
+            force dut.gen_hn[0].u_hn_f.dat_arb_ready = 1'b0;
 
             cpu_req_addr[0*ADDR_WIDTH +: ADDR_WIDTH] = HN_SLOT_SAME_LINE_ADDR;
             cpu_req_op[0*4 +: 4] = `CHI_CPU_OP_RD_SHARED;
@@ -5605,8 +5811,8 @@ module tb_CHI;
             cpu_req_valid[1] = 1'b0;
 
             wait_cycles(80);
-            release dut.dat_node_in_pop_pulse[HN0_NODE_ID];
-            release dut.dat_node_in_ready[HN0_NODE_ID];
+            release dut.gen_hn[0].u_hn_f.dat_arb_ready;
+            release dut.gen_hn[0].u_hn_f.dat_arb_valid;
 
             timeout = 0;
             while (((responded[0] == 1'b0) || (responded[1] == 1'b0)) &&
@@ -6325,6 +6531,13 @@ module tb_CHI;
             $finish;
         end
 
+        if ($test$plusargs("SYSCO_ONLY")) begin
+            sysco_leave_domain_check();
+            if (test_failed) disable main_test;
+            $display("[%0t] REGRESSION PASS tb_CHI tests=T57 (SYSCO_ONLY)", $time);
+            $finish;
+        end
+
         if ($test$plusargs("MU_ONLY")) begin
             mk_unique_compack_check();
             if (test_failed) disable main_test;
@@ -6660,9 +6873,12 @@ module tb_CHI;
         mk_unique_compack_check();
         if (test_failed) disable main_test;
 
+        sysco_leave_domain_check();
+        if (test_failed) disable main_test;
+
         wait_cycles(20);
         if (!test_failed) begin
-            $display("[%0t] REGRESSION PASS tb_CHI tests=T01..T56 cg_always=%0d cg_gated_cycles=%0d AR=%0d R=%0d AW=%0d W=%0d B=%0d",
+            $display("[%0t] REGRESSION PASS tb_CHI tests=T01..T57 cg_always=%0d cg_gated_cycles=%0d AR=%0d R=%0d AW=%0d W=%0d B=%0d",
                      $time, cg_always, cg_gated_cycles,
                      axi_ar_count_base + axi_ar_count,
                      axi_r_count_base + axi_r_count,
@@ -6680,10 +6896,10 @@ module tb_CHI;
                 $display("[%0t] TRACE RN0_TXDAT be=%b data=0x%08h", $time,
                          dut.rn_tx_dat_flit[`CHI_DAT_BE_LSB(DAT_DATA_W,NODE_ID_W) +: BE_W],
                          dut.rn_tx_dat_flit[`CHI_DAT_DATA_LSB(DAT_DATA_W,NODE_ID_W) +: DATA_WIDTH]);
-            if (dut.hn_mem_dat_valid[0] && dut.hn_mem_dat_ready[0])
+            if (dut.gen_hn[0].u_hn_f.mem_dat_valid && dut.gen_hn[0].u_hn_f.mem_dat_ready)
                 $display("[%0t] TRACE HN_MEMDAT be=%b data=0x%08h", $time,
-                         dut.hn_mem_dat_flit[`CHI_DAT_BE_LSB(DAT_DATA_W,NODE_ID_W) +: BE_W],
-                         dut.hn_mem_dat_flit[`CHI_DAT_DATA_LSB(DAT_DATA_W,NODE_ID_W) +: DATA_WIDTH]);
+                         dut.gen_hn[0].u_hn_f.mem_dat_flit[`CHI_DAT_BE_LSB(DAT_DATA_W,NODE_ID_W) +: BE_W],
+                         dut.gen_hn[0].u_hn_f.mem_dat_flit[`CHI_DAT_DATA_LSB(DAT_DATA_W,NODE_ID_W) +: DATA_WIDTH]);
             if (axi_wvalid[0] && axi_wready[0])
                 $display("[%0t] TRACE AXI_W strb=%b data=0x%08h last=%b", $time,
                          axi_wstrb[BE_W-1:0], axi_wdata[DATA_WIDTH-1:0], axi_wlast[0]);
@@ -6848,25 +7064,24 @@ module tb_CHI;
                          $time, cpu_req_op[3:0],
                          cpu_req_addr[ADDR_WIDTH-1:0]);
 
-            if (dut.gen_rn[0].u_rn_f.tx_req_valid &&
-                dut.gen_rn[0].u_rn_f.tx_req_lcrdv)
+            if (dut.gen_rn[0].u_rn_f.tx_req_valid)
                 $display("[%0t] TRACE RN_TX_REQ txn=0x%0h",
                          $time,
                          dut.gen_rn[0].u_rn_f.req_engine_valid ?
                          dut.gen_rn[0].u_rn_f.tx_req_flit[`CHI_REQ_TXN_LSB(NODE_ID_W) +: TXN_ID_W] :
                          {TXN_ID_W{1'b0}});
 
-            if (dut.gen_rn[0].u_rn_f.u_tx_req_link.tx_hold_valid_q ||
-                dut.gen_rn[0].u_rn_f.u_tx_req_link.tx_accept_fire ||
-                dut.gen_rn[0].u_rn_f.u_tx_req_link.tx_launch_fire)
+            if (dut.gen_rn[0].u_rn_f.u_tx_req_link.u_tx.hold_valid_q ||
+                dut.gen_rn[0].u_rn_f.u_tx_req_link.u_tx.take ||
+                dut.gen_rn[0].u_rn_f.u_tx_req_link.u_tx.send)
                 $display("[%0t] TRACE RN_REQ_LINK hold=%0b in_v=%0b in_r=%0b lcrdv=%0b accept=%0b launch=%0b credit=%0d cpu_v=%0b evict_v=%0b req_v=%0b retry_v=%0b op=0x%0h addr=0x%011h",
                          $time,
-                         dut.gen_rn[0].u_rn_f.u_tx_req_link.tx_hold_valid_q,
+                         dut.gen_rn[0].u_rn_f.u_tx_req_link.u_tx.hold_valid_q,
                          dut.gen_rn[0].u_rn_f.u_tx_req_link.tx_in_valid,
                          dut.gen_rn[0].u_rn_f.u_tx_req_link.tx_in_ready,
                          dut.gen_rn[0].u_rn_f.u_tx_req_link.tx_out_lcrdv,
-                         dut.gen_rn[0].u_rn_f.u_tx_req_link.tx_accept_fire,
-                         dut.gen_rn[0].u_rn_f.u_tx_req_link.tx_launch_fire,
+                         dut.gen_rn[0].u_rn_f.u_tx_req_link.u_tx.take,
+                         dut.gen_rn[0].u_rn_f.u_tx_req_link.u_tx.send,
                          dut.gen_rn[0].u_rn_f.u_tx_req_link.credit_count,
                          dut.gen_rn[0].u_rn_f.cpu_req_valid,
                          dut.gen_rn[0].u_rn_f.cache_evict_valid,
@@ -7011,8 +7226,7 @@ module tb_CHI;
                          dut.gen_hn[0].u_hn_f.resp_dat_flit[`CHI_DAT_TXN_LSB(DAT_DATA_W,NODE_ID_W) +: TXN_ID_W],
                          dut.gen_hn[0].u_hn_f.resp_dat_flit[`CHI_DAT_DATAID_LSB(DAT_DATA_W,NODE_ID_W) +: `CHI_DAT_DATAID_W]);
 
-            if (dut.gen_hn[0].u_hn_f.tx_dat_valid &&
-                dut.gen_hn[0].u_hn_f.tx_dat_lcrdv)
+            if (dut.gen_hn[0].u_hn_f.tx_dat_valid)
                 $display("[%0t] TRACE HN_TX_DAT_ACCEPT txn=0x%0h dataid=%0d",
                          $time,
                          dut.gen_hn[0].u_hn_f.tx_dat_flit[`CHI_DAT_TXN_LSB(DAT_DATA_W,NODE_ID_W) +: TXN_ID_W],

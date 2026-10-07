@@ -26,6 +26,9 @@ module chi_channel_slice #(
     input      [7:0]               cfg_qos_age_shift,
     input      [7:0]               cfg_qos_age_max,
     output     [NUM_OUT-1:0]      out_valid,
+    // A flit is in, or entering, the output register: FLITPEND for the
+    // credited link to that output's node (B14.4).
+    output     [NUM_OUT-1:0]      out_pend,
     input      [NUM_OUT-1:0]      out_ready,
     output     [NUM_OUT*FLIT_W-1:0] out_flit
 );
@@ -141,6 +144,8 @@ module chi_channel_slice #(
         .out_ready(xbar_ready),
         .out_flit(xbar_flit)
     );
+
+    assign out_pend = xbar_valid | out_valid;
 
     // A flit is held in an input buffer or an output register.
     assign busy = (|buf_valid) || (|out_valid);

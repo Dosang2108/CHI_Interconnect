@@ -80,26 +80,31 @@ module chi_hn_f #(
     output                   rx_rsp_ready,
     output                   rx_rsp_lcrdv,
 
+    // TX link channels (B14.2.1): *_valid is FLITV, one flit per cycle it
+    // is high, sent only with an L-Credit; *_lcrdv is LCRDV from the
+    // fabric. tx_snp_tgt_id travels with each SNP flit for routing.
+    // tx_req carries the HN's requests to the SNs; tx_dat both CompData to
+    // requesters and write data to the SNs.
     output                   tx_rsp_valid,
     output     [`CHI_RSP_W(NODE_ID_W)-1:0] tx_rsp_flit,
     input                    tx_rsp_lcrdv,
+    output                   tx_rsp_flitpend,
 
     output                   tx_snp_valid,
     output     [`CHI_SNP_W(NODE_ID_W)-1:0] tx_snp_flit,
     output     [NODE_ID_W-1:0] tx_snp_tgt_id,
     input                    tx_snp_lcrdv,
+    output                   tx_snp_flitpend,
 
     output                   tx_dat_valid,
     output     [`CHI_DAT_W(DATA_WIDTH,NODE_ID_W)-1:0] tx_dat_flit,
     input                    tx_dat_lcrdv,
+    output                   tx_dat_flitpend,
 
-    output                   mem_req_valid,
-    input                    mem_req_ready,
-    output     [`CHI_REQ_W(NODE_ID_W)-1:0] mem_req_flit,
-
-    output                   mem_dat_valid,
-    input                    mem_dat_ready,
-    output reg [`CHI_DAT_W(DATA_WIDTH,NODE_ID_W)-1:0] mem_dat_flit,
+    output                   tx_req_valid,
+    output     [`CHI_REQ_W(NODE_ID_W)-1:0] tx_req_flit,
+    input                    tx_req_lcrdv,
+    output                   tx_req_flitpend,
 
     output     [16*32-1:0]   perf_counts,
     output                   ecc_single_event,
@@ -109,8 +114,27 @@ module chi_hn_f #(
     output                   watchdog_event,
     // Any request, tracker, queued flit, LLC/SF operation or exclusive
     // reservation in flight.
-    output                   busy
+    output                   busy,
+
+    // Transmit link activation (B14.5.1): the node asks for its transmit
+    // link while link_want is high and returns its L-Credits once it drops.
+    input                    link_want,
+    output                   tx_linkactivereq,
+    input                    tx_linkactiveack,
+
+    // Coherency domain (B15): rn_in_domain[k] is SYSCOREQ of RN k. An RN
+    // outside the domain is not snooped and not recorded as a sharer.
+    // sysco_quiet[k] is high when no snoop to RN k is outstanding and the
+    // snoop filter no longer lists it, so its SYSCOACK may fall.
+    input      [NUM_RN-1:0]  rn_in_domain,
+    output     [NUM_RN-1:0]  sysco_quiet
 );
+    wire tx_link_run;
+    wire tx_link_deact;
+    wire tx_rsp_pending;
+    wire tx_dat_pending;
+    wire tx_snp_pending;
+    wire tx_req_pending;
     `CHI_FLIT_PARAM_CHECK(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W,QOS_W,DATA_WIDTH)
     `include "../common/chi_clog2.vh"
     localparam REQ_W = `CHI_REQ_W(NODE_ID_W);
@@ -398,6 +422,28 @@ module chi_hn_f #(
     wire [SNP_W-1:0]     scalar_tx_snp_flit;
     wire [NODE_ID_W-1:0] scalar_tx_snp_tgt_id;
     wire                 scalar_snp_send_fire;
+    // Protocol-side SNP/REQ/DAT into the TX links.
+    wire                 tx_snp_link_valid;
+    wire                 tx_snp_link_ready;
+    wire [SNP_W-1:0]     tx_snp_link_flit;
+    wire [NODE_ID_W-1:0] tx_snp_link_tgt_id;
+    wire                 mem_req_valid;
+    wire                 mem_req_ready;
+    wire [REQ_W-1:0]     mem_req_flit;
+    wire                 mem_dat_valid;
+    wire                 mem_dat_ready;
+    reg  [DAT_W-1:0]     mem_dat_flit;
+    // DAT TX arbiter: flits to requesters (tx_dat_link_*) and write data to
+    // the SNs (mem_dat_*) share the one DAT link. Round robin, tx first
+    // after reset; the priority flips with each flit the link takes.
+    wire                 dat_arb_valid;
+    wire                 dat_arb_ready;
+    wire [DAT_W-1:0]     dat_arb_flit;
+    wire                 dat_arb_take;
+    wire                 dat_both_valid;
+    wire                 mem_dat_wins;
+    wire                 tx_dat_wins;
+    reg                  dat_arb_priority_q;
     reg  [NUM_RN-1:0]    snp_send_mask_q;
     reg  [NUM_RN-1:0]    snp_wait_mask_q;
     reg  [NUM_RN-1:0]    snp_send_onehot;
@@ -496,6 +542,8 @@ module chi_hn_f #(
     wire                 wr_trackers_idle;
     wire                 llc_busy;
     wire                 sf_busy;
+    wire [NUM_RN-1:0]    sf_scrub_pending;
+    wire [NUM_RN-1:0]    snp_tracker_pending_vec;
     wire                 rd_tracker_alloc_valid;
     wire                 rd_tracker_alloc_ready;
     wire [TXN_ID_W-1:0]  rd_tracker_alloc_mem_txn_id;
@@ -958,13 +1006,13 @@ module chi_hn_f #(
                                  (snp_send_mask_q != {NUM_RN{1'b0}});
     assign scalar_tx_snp_flit = snp_selected_flit;
     assign scalar_tx_snp_tgt_id = snp_selected_tgt_id;
-    assign tx_snp_valid = scalar_tx_snp_valid || snp_tracker_tx_snp_valid;
-    assign tx_snp_flit = scalar_tx_snp_valid ? scalar_tx_snp_flit :
-                                               snp_tracker_tx_snp_flit;
-    assign tx_snp_tgt_id = scalar_tx_snp_valid ? scalar_tx_snp_tgt_id :
-                                                  snp_tracker_tx_snp_tgt_id;
-    assign scalar_snp_send_fire = scalar_tx_snp_valid && tx_snp_lcrdv;
-    assign snp_tracker_tx_snp_ready = tx_snp_lcrdv && !scalar_tx_snp_valid;
+    assign tx_snp_link_valid = scalar_tx_snp_valid || snp_tracker_tx_snp_valid;
+    assign tx_snp_link_flit = scalar_tx_snp_valid ? scalar_tx_snp_flit :
+                                                    snp_tracker_tx_snp_flit;
+    assign tx_snp_link_tgt_id = scalar_tx_snp_valid ? scalar_tx_snp_tgt_id :
+                                                       snp_tracker_tx_snp_tgt_id;
+    assign scalar_snp_send_fire = scalar_tx_snp_valid && tx_snp_link_ready;
+    assign snp_tracker_tx_snp_ready = tx_snp_link_ready && !scalar_tx_snp_valid;
     assign snp_send_fire = scalar_snp_send_fire;
     assign snp_send_mask_next = snp_send_mask_q & ~snp_send_onehot;
     assign snp_all_sent_next = snp_send_fire ?
@@ -1083,6 +1131,7 @@ module chi_hn_f #(
                               (snp_tracker_tx_dat_valid ?
                                snp_tracker_tx_dat_flit :
                                rd_tracker_tx_dat_flit);
+    assign tx_dat_link_ready = dat_arb_ready && tx_dat_wins;
     assign resp_dat_ready = tx_dat_link_ready;
     assign snp_tracker_tx_dat_ready = tx_dat_link_ready && !resp_dat_valid;
     assign rd_tracker_tx_dat_ready = tx_dat_link_ready && !resp_dat_valid &&
@@ -1099,6 +1148,23 @@ module chi_hn_f #(
                                   1'b0));
 
     assign mem_dat_valid = dat_forward_to_mem || llc_evict_dat_valid;
+    assign mem_dat_ready = dat_arb_ready && mem_dat_wins;
+
+    assign dat_both_valid = tx_dat_link_valid && mem_dat_valid;
+    assign mem_dat_wins   = mem_dat_valid &&
+                            (!tx_dat_link_valid ||
+                             (dat_both_valid && dat_arb_priority_q));
+    assign tx_dat_wins    = tx_dat_link_valid && !mem_dat_wins;
+    assign dat_arb_valid  = tx_dat_wins || mem_dat_wins;
+    assign dat_arb_flit   = tx_dat_wins ? tx_dat_link_flit : mem_dat_flit;
+    assign dat_arb_take   = dat_arb_valid && dat_arb_ready;
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn)
+            dat_arb_priority_q <= 1'b0;
+        else if (dat_arb_take)
+            dat_arb_priority_q <= ~dat_arb_priority_q;
+    end
 
     assign tx_rsp_link_valid = resp_valid || wr_tracker_rsp_valid ||
                                wr_tracker_dbid_rsp_valid ||
@@ -1266,8 +1332,11 @@ module chi_hn_f #(
                   excl_fail_valid_q || err_rsp_valid_q ||
                   retry_ack_valid_q || retry_grant_pending_q ||
                   retry_grant_valid_q || resp_valid ||
-                  tx_rsp_valid || tx_snp_valid || tx_dat_valid ||
-                  mem_req_valid || mem_dat_valid || (|excl_valid_q);
+                  tx_rsp_pending || tx_snp_pending || tx_dat_pending ||
+                  tx_req_pending || mem_dat_valid || (|excl_valid_q);
+
+    assign sysco_quiet = ~(snp_tracker_pending_vec | snp_send_mask_q |
+                           snp_wait_mask_q | sf_scrub_pending);
 
     assign llc_evict_capture_fire = llc_evict_valid && llc_evict_ready;
     // Dirty data returned by a snoop is written to memory through the same
@@ -1328,7 +1397,7 @@ module chi_hn_f #(
     assign hn_perf_events[5]  = start_write || start_upgrade;
     assign hn_perf_events[6]  = state_timeout_fire || rd_tracker_err_valid ||
                                 snp_tracker_err_valid || watchdog_event;
-    assign hn_perf_events[7]  = tx_snp_valid && !tx_snp_lcrdv;
+    assign hn_perf_events[7]  = tx_snp_link_valid && !tx_snp_link_ready;
     assign hn_perf_events[8]  = tx_rsp_link_valid && !tx_rsp_link_ready;
     assign hn_perf_events[9]  = tx_dat_link_valid && !tx_dat_link_ready;
     assign hn_perf_events[10] = llc_ecc_single_error;
@@ -2063,7 +2132,9 @@ module chi_hn_f #(
         .update_merge(filter_update_merge),
         .backinv_valid(backinv_valid),
         .backinv_addr(backinv_addr),
-        .backinv_sharer_vec(backinv_sharer_vec)
+        .backinv_sharer_vec(backinv_sharer_vec),
+        .rn_in_domain(rn_in_domain),
+        .scrub_pending(sf_scrub_pending)
     );
 
     chi_hn_llc #(
@@ -2352,7 +2423,8 @@ module chi_hn_f #(
         .active_valid_vec(snp_tracker_active_valid_vec),
         .active_addr_flat(snp_tracker_active_addr_flat),
         .used_count(snp_tracker_used_unused),
-        .watchdog(snp_tracker_watchdog)
+        .watchdog(snp_tracker_watchdog),
+        .snp_pending_vec(snp_tracker_pending_vec)
     );
 
     chi_hn_resp_engine #(
@@ -2379,6 +2451,16 @@ module chi_hn_f #(
         .rsp_flit(resp_flit)
     );
 
+    chi_link_active_tx u_tx_link_active (
+        .clk(clk),
+        .rstn(rstn),
+        .want(link_want),
+        .linkactivereq(tx_linkactivereq),
+        .linkactiveack(tx_linkactiveack),
+        .run(tx_link_run),
+        .deact(tx_link_deact)
+    );
+
     chi_link_layer #(
         .FLIT_W(RSP_W),
         .INIT_CREDIT(INIT_CRD)
@@ -2392,6 +2474,10 @@ module chi_hn_f #(
         .tx_out_valid(tx_rsp_valid),
         .tx_out_flit(tx_rsp_flit),
         .tx_out_lcrdv(tx_rsp_lcrdv),
+        .tx_out_flitpend(tx_rsp_flitpend),
+        .link_run(tx_link_run),
+        .link_deact(tx_link_deact),
+        .tx_pending(tx_rsp_pending),
         .rx_in_valid(1'b0),
         .rx_in_flit({RSP_W{1'b0}}),
         .rx_in_lcrdv(),
@@ -2411,12 +2497,16 @@ module chi_hn_f #(
         .clk(clk),
         .rstn(rstn),
         .clear(1'b0),
-        .tx_in_valid(tx_dat_link_valid),
-        .tx_in_ready(tx_dat_link_ready),
-        .tx_in_flit(tx_dat_link_flit),
+        .tx_in_valid(dat_arb_valid),
+        .tx_in_ready(dat_arb_ready),
+        .tx_in_flit(dat_arb_flit),
         .tx_out_valid(tx_dat_valid),
         .tx_out_flit(tx_dat_flit),
         .tx_out_lcrdv(tx_dat_lcrdv),
+        .tx_out_flitpend(tx_dat_flitpend),
+        .link_run(tx_link_run),
+        .link_deact(tx_link_deact),
+        .tx_pending(tx_dat_pending),
         .rx_in_valid(1'b0),
         .rx_in_flit({DAT_W{1'b0}}),
         .rx_in_lcrdv(),
@@ -2427,6 +2517,64 @@ module chi_hn_f #(
         .tx_fire_pulse(tx_dat_fire_unused),
         .tx_credit_return_pulse(tx_dat_return_unused),
         .tx_credit_stall(tx_dat_stall_unused)
+    );
+
+    chi_link_layer #(
+        .FLIT_W(SNP_W + NODE_ID_W),
+        .INIT_CREDIT(INIT_CRD)
+    ) u_tx_snp_link (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(1'b0),
+        .tx_in_valid(tx_snp_link_valid),
+        .tx_in_ready(tx_snp_link_ready),
+        .tx_in_flit({tx_snp_link_tgt_id, tx_snp_link_flit}),
+        .tx_out_valid(tx_snp_valid),
+        .tx_out_flit({tx_snp_tgt_id, tx_snp_flit}),
+        .tx_out_lcrdv(tx_snp_lcrdv),
+        .tx_out_flitpend(tx_snp_flitpend),
+        .link_run(tx_link_run),
+        .link_deact(tx_link_deact),
+        .tx_pending(tx_snp_pending),
+        .rx_in_valid(1'b0),
+        .rx_in_flit({(SNP_W + NODE_ID_W){1'b0}}),
+        .rx_in_lcrdv(),
+        .rx_out_valid(),
+        .rx_out_ready(1'b1),
+        .rx_out_flit(),
+        .credit_count(),
+        .tx_fire_pulse(),
+        .tx_credit_return_pulse(),
+        .tx_credit_stall()
+    );
+
+    chi_link_layer #(
+        .FLIT_W(REQ_W),
+        .INIT_CREDIT(INIT_CRD)
+    ) u_tx_req_link (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(1'b0),
+        .tx_in_valid(mem_req_valid),
+        .tx_in_ready(mem_req_ready),
+        .tx_in_flit(mem_req_flit),
+        .tx_out_valid(tx_req_valid),
+        .tx_out_flit(tx_req_flit),
+        .tx_out_lcrdv(tx_req_lcrdv),
+        .tx_out_flitpend(tx_req_flitpend),
+        .link_run(tx_link_run),
+        .link_deact(tx_link_deact),
+        .tx_pending(tx_req_pending),
+        .rx_in_valid(1'b0),
+        .rx_in_flit({REQ_W{1'b0}}),
+        .rx_in_lcrdv(),
+        .rx_out_valid(),
+        .rx_out_ready(1'b1),
+        .rx_out_flit(),
+        .credit_count(),
+        .tx_fire_pulse(),
+        .tx_credit_return_pulse(),
+        .tx_credit_stall()
     );
 
     chi_hn_mem_issuer #(
@@ -2726,7 +2874,9 @@ module chi_hn_snoop_tracker #(
     output     [DEPTH*2-1:0] active_valid_vec,
     output     [DEPTH*2*ADDR_WIDTH-1:0] active_addr_flat,
     output     [15:0]        used_count,
-    output                   watchdog
+    output                   watchdog,
+    // RNs that an active entry snooped: a snoop to them may be outstanding.
+    output     [NUM_RN-1:0]  snp_pending_vec
 );
     `include "../common/chi_clog2.vh"
     localparam IDX_W = (DEPTH <= 2) ? 1 : `CHI_CLOG2(DEPTH);
@@ -2998,6 +3148,19 @@ module chi_hn_snoop_tracker #(
                        excl_q[filter_update_idx_r]);
     assign used_count = used_count_r;
     assign watchdog = watchdog_r;
+
+    reg [NUM_RN-1:0] snp_pending_r;
+    integer          pend_i;
+
+    always @(*) begin
+        snp_pending_r = {NUM_RN{1'b0}};
+        for (pend_i = 0; pend_i < DEPTH; pend_i = pend_i + 1) begin
+            if (state_q[pend_i] != SNP_ST_EMPTY)
+                snp_pending_r = snp_pending_r | snoop_target_mask_q[pend_i];
+        end
+    end
+
+    assign snp_pending_vec = snp_pending_r;
 
     generate
         for (gi = 0; gi < DEPTH; gi = gi + 1) begin : gen_active_line

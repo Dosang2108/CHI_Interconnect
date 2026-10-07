@@ -42,18 +42,39 @@ module chi_mn_dvm #(
     input      [`CHI_DAT_W(DAT_DATA_W,NODE_ID_W)-1:0] rx_dat_flit,
     output                   rx_dat_ready,
 
+    // TX link channels (B14.2.1): *_valid is FLITV, one flit per cycle it
+    // is high, sent only with an L-Credit; *_lcrdv is LCRDV from the
+    // fabric. tx_snp_tgt_id travels with each SNP flit for routing.
     output                   tx_snp_valid,
-    output reg [`CHI_SNP_W(NODE_ID_W)-1:0] tx_snp_flit,
+    output     [`CHI_SNP_W(NODE_ID_W)-1:0] tx_snp_flit,
     output     [NODE_ID_W-1:0] tx_snp_tgt_id,
     input                    tx_snp_lcrdv,
+    output                   tx_snp_flitpend,
 
     output                   tx_rsp_valid,
-    output reg [`CHI_RSP_W(NODE_ID_W)-1:0] tx_rsp_flit,
+    output     [`CHI_RSP_W(NODE_ID_W)-1:0] tx_rsp_flit,
     input                    tx_rsp_lcrdv,
+    output                   tx_rsp_flitpend,
     output                   watchdog_event,
     // A DVM transaction is in progress.
-    output                   busy
+    output                   busy,
+
+    // Transmit link activation (B14.5.1): the node asks for its transmit
+    // link while link_want is high and returns its L-Credits once it drops.
+    input                    link_want,
+    output                   tx_linkactivereq,
+    input                    tx_linkactiveack,
+
+    // Coherency domain (B15, which includes the DVM domain): an RN outside
+    // it gets no SnpDVMOp. sysco_quiet[k] is high when no SnpDVMOp to RN k
+    // is outstanding.
+    input      [NUM_RN-1:0]  rn_in_domain,
+    output     [NUM_RN-1:0]  sysco_quiet
 );
+    wire tx_link_run;
+    wire tx_link_deact;
+    wire snp_link_pending;
+    wire rsp_link_pending;
     `CHI_FLIT_PARAM_CHECK(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W,QOS_W,DAT_DATA_W)
     `include "../common/chi_clog2.vh"
     localparam REQ_W = `CHI_REQ_W(NODE_ID_W);
@@ -73,6 +94,17 @@ module chi_mn_dvm #(
     localparam SNP_TXN_LSB     = `CHI_SNP_TXN_LSB(NODE_ID_W);
     localparam SNP_SRC_LSB     = `CHI_SNP_SRC_LSB(NODE_ID_W);
     localparam SNP_QOS_LSB     = `CHI_SNP_QOS_LSB(NODE_ID_W);
+
+    // Protocol side of the SNP and RSP TX links.
+    wire                 snp_link_valid;
+    wire                 snp_link_ready;
+    reg  [SNP_W-1:0]     snp_link_flit;
+    wire [NODE_ID_W-1:0] snp_link_tgt_id;
+    wire                 snp_link_flitpend;
+    wire                 rsp_link_valid;
+    wire                 rsp_link_ready;
+    reg  [RSP_W-1:0]     rsp_link_flit;
+    wire                 rsp_link_flitpend;
     localparam SNP_FWD_NID_LSB = `CHI_SNP_FWD_NID_LSB(NODE_ID_W);
     localparam SNP_FWD_TXN_LSB = `CHI_SNP_FWD_TXN_LSB(NODE_ID_W);
 
@@ -151,6 +183,7 @@ module chi_mn_dvm #(
     integer              src_i;
 
     wire [NUM_RN-1:0] all_rn_mask = {NUM_RN{1'b1}};
+    assign sysco_quiet = ~(active_send_mask | active_wait_mask);
     wire req_accept = (state_q == ST_IDLE) &&
                       rx_req_valid &&
                       tracker_alloc_ready;
@@ -160,7 +193,7 @@ module chi_mn_dvm #(
     wire unsupported_accept = req_accept && !req_is_dvm;
 
     wire is_sync = (req_addr_q[`CHI_DVM_TYPE_LSB +: 3] == `CHI_DVM_TYPE_SYNC);
-    wire snp_send_fire = tx_snp_valid && tx_snp_lcrdv;
+    wire snp_send_fire = snp_link_valid && snp_link_ready;
     // Both parts are out once Part 2 is sent.
     wire snp_part2_fire = snp_send_fire && part_q;
     wire rsp_ack_fire = rx_rsp_valid &&
@@ -174,7 +207,7 @@ module chi_mn_dvm #(
     wire dat_match = (dat_opcode == `CHI_DAT_OPCODE_WB_DATA) &&
                      (dat_txn_id == MN_DBID) &&
                      (dat_src_id == active_src_id);
-    wire tx_rsp_fire = tx_rsp_valid && tx_rsp_lcrdv;
+    wire tx_rsp_fire = rsp_link_valid && rsp_link_ready;
     wire [NUM_RN-1:0] send_mask_after =
         snp_part2_fire ? (active_send_mask & ~selected_onehot) :
                          active_send_mask;
@@ -202,8 +235,8 @@ module chi_mn_dvm #(
     assign rx_dat_ready = (state_q == ST_WAIT_DATA);
     assign rx_req_lcrdv = rx_req_valid && rx_req_ready;
     assign rx_rsp_lcrdv = rx_rsp_valid && rx_rsp_ready;
-    assign tx_snp_valid = (state_q == ST_ISSUE) && selected_valid;
-    assign tx_snp_tgt_id = selected_tgt_id;
+    assign snp_link_valid = (state_q == ST_ISSUE) && selected_valid;
+    assign snp_link_tgt_id = selected_tgt_id;
 
     always @(*) begin
         selected_valid = 1'b0;
@@ -240,41 +273,41 @@ module chi_mn_dvm #(
     // in Part 1 FwdNID[0], Num[4:0] in Part 2 FwdNID[4:0], and VMID[15:8] in
     // Part 1 VMIDExt (Table B8.14, B13.8).
     always @(*) begin
-        tx_snp_flit = {SNP_W{1'b0}};
+        snp_link_flit = {SNP_W{1'b0}};
         if (!part_q) begin
-            tx_snp_flit[SNP_ADDR_LSB +: 38] = {req_addr_q[40:4], 1'b0};
-            tx_snp_flit[SNP_ADDR_LSB + 38 +: 3] = payload_q[46:44];
-            tx_snp_flit[SNP_FWD_NID_LSB] = req_addr_q[41];
-            tx_snp_flit[SNP_FWD_TXN_LSB +: 8] = payload_q[63:56];
+            snp_link_flit[SNP_ADDR_LSB +: 38] = {req_addr_q[40:4], 1'b0};
+            snp_link_flit[SNP_ADDR_LSB + 38 +: 3] = payload_q[46:44];
+            snp_link_flit[SNP_FWD_NID_LSB] = req_addr_q[41];
+            snp_link_flit[SNP_FWD_TXN_LSB +: 8] = payload_q[63:56];
         end else begin
-            tx_snp_flit[SNP_ADDR_LSB +: SNP_AW] =
+            snp_link_flit[SNP_ADDR_LSB +: SNP_AW] =
                 {payload_q[SNP_AW+2:4], 1'b1};
-            tx_snp_flit[SNP_FWD_NID_LSB +: 5] =
+            snp_link_flit[SNP_FWD_NID_LSB +: 5] =
                 {req_addr_q[42], payload_q[3:0]};
         end
-        tx_snp_flit[SNP_OPCODE_LSB +: `CHI_SNP_OPCODE_W] = `CHI_SNP_DVM_OP;
+        snp_link_flit[SNP_OPCODE_LSB +: `CHI_SNP_OPCODE_W] = `CHI_SNP_DVM_OP;
         // The MN runs one DVM at a time, so the snooped RN's index is a
         // TxnID unique among its open snoops (B2.5.1). Both parts share it.
-        tx_snp_flit[SNP_TXN_LSB +: TXN_ID_W] = selected_tgt_id - RN_BASE_ID;
-        tx_snp_flit[SNP_SRC_LSB +: NODE_ID_W] = NODE_ID;
-        tx_snp_flit[SNP_QOS_LSB +: QOS_W] = active_qos;
+        snp_link_flit[SNP_TXN_LSB +: TXN_ID_W] = selected_tgt_id - RN_BASE_ID;
+        snp_link_flit[SNP_SRC_LSB +: NODE_ID_W] = NODE_ID;
+        snp_link_flit[SNP_QOS_LSB +: QOS_W] = active_qos;
     end
 
     // DBIDResp, then Comp (Table B8.2: Resp zero; RespErr OK or SLVERR).
-    assign tx_rsp_valid = (state_q == ST_SEND_DBID) ||
+    assign rsp_link_valid = (state_q == ST_SEND_DBID) ||
                           (state_q == ST_SEND_COMP);
     always @(*) begin
-        tx_rsp_flit = {RSP_W{1'b0}};
-        tx_rsp_flit[RSP_RESPERR_LSB +: 2] =
+        rsp_link_flit = {RSP_W{1'b0}};
+        rsp_link_flit[RSP_RESPERR_LSB +: 2] =
             ((state_q == ST_SEND_COMP) && complete_error_q) ?
             `CHI_RESPERR_SLVERR : `CHI_RESPERR_OK;
-        tx_rsp_flit[RSP_DBID_LSB +: DBID_W] = MN_DBID;
-        tx_rsp_flit[RSP_OPCODE_LSB +: `CHI_RSP_OPCODE_W] =
+        rsp_link_flit[RSP_DBID_LSB +: DBID_W] = MN_DBID;
+        rsp_link_flit[RSP_OPCODE_LSB +: `CHI_RSP_OPCODE_W] =
             (state_q == ST_SEND_DBID) ? `CHI_RSP_DBID : `CHI_RSP_COMP;
-        tx_rsp_flit[RSP_TXN_LSB +: TXN_ID_W] = complete_txn_id;
-        tx_rsp_flit[RSP_SRC_LSB +: NODE_ID_W] = NODE_ID;
-        tx_rsp_flit[RSP_TGT_LSB +: NODE_ID_W] = complete_tgt_id;
-        tx_rsp_flit[RSP_QOS_LSB +: QOS_W] = complete_qos;
+        rsp_link_flit[RSP_TXN_LSB +: TXN_ID_W] = complete_txn_id;
+        rsp_link_flit[RSP_SRC_LSB +: NODE_ID_W] = NODE_ID;
+        rsp_link_flit[RSP_TGT_LSB +: NODE_ID_W] = complete_tgt_id;
+        rsp_link_flit[RSP_QOS_LSB +: QOS_W] = complete_qos;
     end
 
     always @(posedge clk) begin
@@ -396,7 +429,7 @@ module chi_mn_dvm #(
         .alloc_src_id(req_src_id),
         .alloc_qos(req_qos),
         // Every RN but the requester; nobody when DVM is disabled.
-        .alloc_mask(dvm_enable ? (all_rn_mask & ~req_src_onehot) :
+        .alloc_mask(dvm_enable ? (all_rn_mask & ~req_src_onehot & rn_in_domain) :
                                  {NUM_RN{1'b0}}),
         .phase_start_valid(1'b0),
         .phase_mask({NUM_RN{1'b0}}),
@@ -440,5 +473,75 @@ module chi_mn_dvm #(
     end
     // synthesis translate_on
 
-    assign busy = (state_q != ST_IDLE) || tracker_busy;
+    chi_link_active_tx u_tx_link_active (
+        .clk(clk),
+        .rstn(rstn),
+        .want(link_want),
+        .linkactivereq(tx_linkactivereq),
+        .linkactiveack(tx_linkactiveack),
+        .run(tx_link_run),
+        .deact(tx_link_deact)
+    );
+
+    chi_link_layer #(
+        .FLIT_W(SNP_W + NODE_ID_W)
+    ) u_tx_snp_link (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(1'b0),
+        .tx_in_valid(snp_link_valid),
+        .tx_in_ready(snp_link_ready),
+        .tx_in_flit({snp_link_tgt_id, snp_link_flit}),
+        .tx_out_valid(tx_snp_valid),
+        .tx_out_flit({tx_snp_tgt_id, tx_snp_flit}),
+        .tx_out_lcrdv(tx_snp_lcrdv),
+        .tx_out_flitpend(snp_link_flitpend),
+        .link_run(tx_link_run),
+        .link_deact(tx_link_deact),
+        .tx_pending(snp_link_pending),
+        .rx_in_valid(1'b0),
+        .rx_in_flit({(SNP_W + NODE_ID_W){1'b0}}),
+        .rx_in_lcrdv(),
+        .rx_out_valid(),
+        .rx_out_ready(1'b1),
+        .rx_out_flit(),
+        .credit_count(),
+        .tx_fire_pulse(),
+        .tx_credit_return_pulse(),
+        .tx_credit_stall()
+    );
+
+    chi_link_layer #(
+        .FLIT_W(RSP_W)
+    ) u_tx_rsp_link (
+        .clk(clk),
+        .rstn(rstn),
+        .clear(1'b0),
+        .tx_in_valid(rsp_link_valid),
+        .tx_in_ready(rsp_link_ready),
+        .tx_in_flit(rsp_link_flit),
+        .tx_out_valid(tx_rsp_valid),
+        .tx_out_flit(tx_rsp_flit),
+        .tx_out_lcrdv(tx_rsp_lcrdv),
+        .tx_out_flitpend(rsp_link_flitpend),
+        .link_run(tx_link_run),
+        .link_deact(tx_link_deact),
+        .tx_pending(rsp_link_pending),
+        .rx_in_valid(1'b0),
+        .rx_in_flit({RSP_W{1'b0}}),
+        .rx_in_lcrdv(),
+        .rx_out_valid(),
+        .rx_out_ready(1'b1),
+        .rx_out_flit(),
+        .credit_count(),
+        .tx_fire_pulse(),
+        .tx_credit_return_pulse(),
+        .tx_credit_stall()
+    );
+
+    assign tx_snp_flitpend = snp_link_flitpend;
+    assign tx_rsp_flitpend = rsp_link_flitpend;
+
+    assign busy = (state_q != ST_IDLE) || tracker_busy ||
+                  snp_link_pending || rsp_link_pending;
 endmodule

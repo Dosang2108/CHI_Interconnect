@@ -2,19 +2,27 @@
 
 // -----------------------------------------------------------------------------
 // Module: chi_link_layer
-// Purpose: CHI link-layer credit gate.  Each per-channel (REQ/SNP/RSP/DAT)
-//          instance pairs a TX credit counter with a passthrough RX path.
+// Purpose: Transmit side of one CHI link channel (REQ/SNP/RSP/DAT) inside a
+//          node, with the node's ports as real CHI link signals
+//          (IHI0050H B14.2.1).
 //
-//   TX:  tx_in_*  -- credit_ok --> tx_out_*       (gated by registered credit)
-//        A registered hold buffer preserves flits when the fabric does not
-//        accept in the same cycle. Returned L-Credit still takes effect on the
-//        next clock edge, and tx_out_valid is registered to avoid valid/ready
-//        combinational loops through fabric backpressure.
-//   RX:  rx_in_*  -- skid --> rx_out_*  ; rx_in_lcrdv pulses when the skid
-//        buffer accepts the flit, decoupling credit return from one-cycle
-//        downstream stalls.
+//   TX:  tx_in_*  -- valid/ready from the protocol layer
+//        tx_out_valid is FLITV: each cycle it is high is one flit, sent only
+//        while the node holds an L-Credit. tx_out_lcrdv is LCRDV from the
+//        receiver: one credit per cycle it is high, counted from the next
+//        cycle. Credits start at 0; the receiver grants them after reset.
+//        tx_out_flitpend is FLITPEND, high at least one cycle before FLITV.
+//        Flits go out in RUN only (link_run); in DEACTIVATE (link_deact) the
+//        credits held go back as LCrdReturn flits (B14.5.1). tx_pending is
+//        high while a protocol flit is held or offered. See chi_link_tx.
+//   RX:  rx_in_* -- skid --> rx_out_*. Unused: every node ties rx_in_valid
+//        low and chi_top owns the receive side (chi_link_rx).
 //
-//   underflow / overflow assertions live in chi_credit_counter (simulation).
+//   tx_fire_pulse marks a protocol flit sent (flits go out in RUN only, so
+//   an LCrdReturn flit is not counted), tx_credit_return_pulse a credit
+//   received, tx_credit_stall a flit offered but not taken this cycle.
+//   INIT_CREDIT is kept for the instance parameter lists; credits now come
+//   from the receiver, so it has no effect.
 // -----------------------------------------------------------------------------
 module chi_link_layer #(
     parameter FLIT_W      = 128,
@@ -25,12 +33,18 @@ module chi_link_layer #(
     input                  rstn,
     input                  clear,
 
+    // Link state from the node's chi_link_active_tx.
+    input                  link_run,
+    input                  link_deact,
+
     input                  tx_in_valid,
     output                 tx_in_ready,
     input      [FLIT_W-1:0] tx_in_flit,
     output                 tx_out_valid,
     output     [FLIT_W-1:0] tx_out_flit,
     input                  tx_out_lcrdv,
+    output                 tx_out_flitpend,
+    output                 tx_pending,
 
     input                  rx_in_valid,
     input      [FLIT_W-1:0] rx_in_flit,
@@ -44,24 +58,31 @@ module chi_link_layer #(
     output                 tx_credit_return_pulse,
     output                 tx_credit_stall
 );
-    wire credit_ok;
-    wire credit_ok_bypass;
-    wire underflow;
-    wire overflow;
-    wire tx_accept_fire;
-    wire tx_launch_fire;
-    wire rx_skid_in_ready;
-    reg                  tx_hold_valid_q;
-    reg [FLIT_W-1:0]     tx_hold_flit_q;
+    wire       rx_skid_in_ready;
+    wire [3:0] tx_credits;
 
-    assign tx_out_valid = tx_hold_valid_q;
-    assign tx_out_flit  = tx_hold_flit_q;
-    assign tx_launch_fire = tx_hold_valid_q && tx_out_lcrdv;
-    assign tx_in_ready  = credit_ok_bypass && (!tx_hold_valid_q || tx_launch_fire);
-    assign tx_accept_fire = tx_in_valid && tx_in_ready;
-    assign tx_fire_pulse = tx_launch_fire;
+    chi_link_tx #(
+        .FLIT_W(FLIT_W)
+    ) u_tx (
+        .clk(clk),
+        .rstn(rstn),
+        .link_run(link_run),
+        .link_deact(link_deact),
+        .in_valid(tx_in_valid),
+        .in_ready(tx_in_ready),
+        .in_flit(tx_in_flit),
+        .pending(tx_pending),
+        .flitpend(tx_out_flitpend),
+        .flitv(tx_out_valid),
+        .flit(tx_out_flit),
+        .lcrdv(tx_out_lcrdv),
+        .credit_count(tx_credits)
+    );
+
+    assign credit_count           = tx_credits[CREDIT_W-1:0];
+    assign tx_fire_pulse          = tx_out_valid && link_run;
     assign tx_credit_return_pulse = tx_out_lcrdv;
-    assign tx_credit_stall = tx_in_valid && !tx_in_ready;
+    assign tx_credit_stall        = tx_in_valid && !tx_in_ready;
 
     assign rx_in_lcrdv = rx_in_valid && rx_skid_in_ready;
 
@@ -78,57 +99,4 @@ module chi_link_layer #(
         .out_ready(rx_out_ready),
         .out_data(rx_out_flit)
     );
-
-    chi_credit_counter #(
-        .CREDIT_W(CREDIT_W),
-        .INIT_CREDIT(INIT_CREDIT),
-        .MAX_CREDIT(INIT_CREDIT)
-    ) u_credit_counter (
-        .clk(clk),
-        .rstn(rstn),
-        .clear(clear),
-        .tx_fire(tx_launch_fire),
-        .lcrdv(tx_out_lcrdv),
-        .credit_ok(credit_ok),
-        .credit_ok_bypass(credit_ok_bypass),
-        .credit_count(credit_count),
-        .underflow(underflow),
-        .overflow(overflow)
-    );
-
-    always @(posedge clk or negedge rstn) begin
-        if (!rstn) begin
-            tx_hold_valid_q <= 1'b0;
-            tx_hold_flit_q  <= {FLIT_W{1'b0}};
-        end else if (clear) begin
-            tx_hold_valid_q <= 1'b0;
-            tx_hold_flit_q  <= {FLIT_W{1'b0}};
-        end else begin
-            case ({tx_accept_fire, tx_launch_fire})
-                2'b10: begin
-                    tx_hold_valid_q <= 1'b1;
-                    tx_hold_flit_q  <= tx_in_flit;
-                end
-                2'b01: begin
-                    tx_hold_valid_q <= 1'b0;
-                end
-                2'b11: begin
-                    tx_hold_valid_q <= 1'b1;
-                    tx_hold_flit_q  <= tx_in_flit;
-                end
-                default: begin
-                    tx_hold_valid_q <= tx_hold_valid_q;
-                end
-            endcase
-        end
-    end
-
-    // synthesis translate_off
-    always @(posedge clk) begin
-        if (rstn && tx_launch_fire && !credit_ok_bypass) begin
-            $display("chi_link_layer transmitted without credit");
-            $stop;
-        end
-    end
-    // synthesis translate_on
 endmodule

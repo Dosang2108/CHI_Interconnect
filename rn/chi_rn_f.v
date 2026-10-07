@@ -60,14 +60,17 @@ module chi_rn_f #(
     output                   tx_req_valid,
     output     [`CHI_REQ_W(NODE_ID_W)-1:0] tx_req_flit,
     input                    tx_req_lcrdv,
+    output                   tx_req_flitpend,
 
     output                   tx_rsp_valid,
     output     [`CHI_RSP_W(NODE_ID_W)-1:0] tx_rsp_flit,
     input                    tx_rsp_lcrdv,
+    output                   tx_rsp_flitpend,
 
     output                   tx_dat_valid,
     output     [`CHI_DAT_W(DAT_DATA_W,NODE_ID_W)-1:0] tx_dat_flit,
     input                    tx_dat_lcrdv,
+    output                   tx_dat_flitpend,
 
     input                    rx_rsp_valid,
     input      [`CHI_RSP_W(NODE_ID_W)-1:0] rx_rsp_flit,
@@ -88,8 +91,26 @@ module chi_rn_f #(
     output                   cache_parity_error_event,
     output                   watchdog_event,
     // Any transaction, snoop, queued flit or local reservation in flight.
-    output                   busy
+    output                   busy,
+
+    // Transmit link activation (B14.5.1): the node asks for its transmit
+    // link while link_want is high and returns its L-Credits once it drops.
+    input                    link_want,
+    output                   tx_linkactivereq,
+    input                    tx_linkactiveack,
+
+    // System coherency interface (B15). sysco_connect asks the node to be
+    // in the coherency domain. The node raises SYSCOREQ to join, and lowers
+    // it to leave only once its cache is flushed and nothing is in flight.
+    input                    sysco_connect,
+    output                   syscoreq,
+    input                    syscoack
 );
+    wire tx_link_run;
+    wire tx_link_deact;
+    wire tx_req_pending;
+    wire tx_rsp_pending;
+    wire tx_dat_pending;
     `CHI_FLIT_PARAM_CHECK(ADDR_WIDTH,NODE_ID_W,TXN_ID_W,DBID_W,QOS_W,DAT_DATA_W)
     `include "../common/chi_clog2.vh"
     localparam REQ_W = `CHI_REQ_W(NODE_ID_W);
@@ -338,6 +359,10 @@ module chi_rn_f #(
     wire [LINE_WIDTH-1:0] fe_resp_line_data;
     wire                 fe_local_store;
     wire                 fe_busy;
+    // CPU requests are taken only in Coherency Enabled (B15.2.3).
+    wire                 sysco_cpu_open;
+    wire                 cache_flush_valid;
+    wire                 cache_flush_done;
     // 2.5: a STREX sent as CleanUnique(Excl) is finished by the front end:
     // it merges the store on EXOKAY, then sends the CompAck.
     wire                 selected_is_strex_cu;
@@ -802,6 +827,16 @@ module chi_rn_f #(
         .reservation_clear_pulse(reservation_clear_pulse_unused)
     );
 
+    chi_link_active_tx u_tx_link_active (
+        .clk(clk),
+        .rstn(rstn),
+        .want(link_want),
+        .linkactivereq(tx_linkactivereq),
+        .linkactiveack(tx_linkactiveack),
+        .run(tx_link_run),
+        .deact(tx_link_deact)
+    );
+
     chi_link_layer #(
         .FLIT_W(REQ_W),
         .INIT_CREDIT(INIT_CRD)
@@ -815,6 +850,10 @@ module chi_rn_f #(
         .tx_out_valid(tx_req_valid),
         .tx_out_flit(tx_req_flit),
         .tx_out_lcrdv(tx_req_lcrdv),
+        .tx_out_flitpend(tx_req_flitpend),
+        .link_run(tx_link_run),
+        .link_deact(tx_link_deact),
+        .tx_pending(tx_req_pending),
         .rx_in_valid(1'b0),
         .rx_in_flit({REQ_W{1'b0}}),
         .rx_in_lcrdv(),
@@ -894,7 +933,7 @@ module chi_rn_f #(
             assign cache_busy = 1'b0;
 
             // No local cache: the CPU port is the transaction port.
-            assign core_req_valid = cpu_req_valid;
+            assign core_req_valid = cpu_req_valid && sysco_cpu_open;
             assign core_req_addr = cpu_req_addr;
             assign core_req_op = cpu_req_op;
             assign core_req_size = cpu_req_size;
@@ -902,7 +941,7 @@ module chi_rn_f #(
             assign core_req_tag = cpu_req_tag;
             assign core_wline = cpu_wdata_line;
             assign core_wstrb = cpu_wstrb_line;
-            assign cpu_req_ready = core_req_ready;
+            assign cpu_req_ready = core_req_ready && sysco_cpu_open;
             assign fe_resp_fire = 1'b0;
             assign fe_resp_line = 1'b0;
             assign fe_resp_rdata = {DATA_WIDTH{1'b0}};
@@ -927,6 +966,7 @@ module chi_rn_f #(
             assign cache_cpu_line = {LINE_WIDTH{1'b0}};
             assign cache_cpu_local = 1'b0;
             assign cache_cpu_flushed = 1'b0;
+            assign cache_flush_done = 1'b1;
             assign cache_victim_valid = 2'b00;
             assign cache_victim_addr_flat = {2*ADDR_WIDTH{1'b0}};
             assign cache_victim_data_flat = {2*LINE_WIDTH{1'b0}};
@@ -1010,7 +1050,7 @@ module chi_rn_f #(
             end
 
             assign cpu_req_ready = (fe_state_q == FE_IDLE) &&
-                                   !fe_compack_valid_q;
+                                   !fe_compack_valid_q && sysco_cpu_open;
 
             assign core_req_valid = (fe_state_q == FE_ISSUE);
             assign core_req_addr = fe_addr_q;
@@ -1071,7 +1111,7 @@ module chi_rn_f #(
                         fe_compack_valid_q <= 1'b0;
                     case (fe_state_q)
                         FE_IDLE: begin
-                            if (cpu_req_valid) begin
+                            if (cpu_req_valid && sysco_cpu_open) begin
                                 fe_addr_q <= cpu_req_addr;
                                 fe_op_q <= cpu_req_op;
                                 fe_size_q <= cpu_req_size;
@@ -1211,6 +1251,8 @@ module chi_rn_f #(
                 .cpu_line(cache_cpu_line),
                 .cpu_local(cache_cpu_local),
                 .cpu_flushed(cache_cpu_flushed),
+                .flush_valid(cache_flush_valid),
+                .flush_done(cache_flush_done),
                 .victim_valid(cache_victim_valid),
                 .victim_addr_flat(cache_victim_addr_flat),
                 .victim_data_flat(cache_victim_data_flat)
@@ -1321,6 +1363,10 @@ module chi_rn_f #(
         .tx_out_valid(tx_rsp_valid),
         .tx_out_flit(tx_rsp_flit),
         .tx_out_lcrdv(tx_rsp_lcrdv),
+        .tx_out_flitpend(tx_rsp_flitpend),
+        .link_run(tx_link_run),
+        .link_deact(tx_link_deact),
+        .tx_pending(tx_rsp_pending),
         .rx_in_valid(1'b0),
         .rx_in_flit({RSP_W{1'b0}}),
         .rx_in_lcrdv(),
@@ -1374,6 +1420,10 @@ module chi_rn_f #(
         .tx_out_valid(tx_dat_valid),
         .tx_out_flit(tx_dat_flit),
         .tx_out_lcrdv(tx_dat_lcrdv),
+        .tx_out_flitpend(tx_dat_flitpend),
+        .link_run(tx_link_run),
+        .link_deact(tx_link_deact),
+        .tx_pending(tx_dat_pending),
         .rx_in_valid(1'b0),
         .rx_in_flit({DAT_W{1'b0}}),
         .rx_in_lcrdv(),
@@ -1569,11 +1619,51 @@ module chi_rn_f #(
     // a TX link or RX buffer, or local work (snoop, cache update, write
     // data, CompAck, CPU response) keeps the fabric clock running. The
     // reservation is included so exclusive-monitor aging keeps counting.
-    assign busy = (outstanding_count != 16'd0) || reservation_valid ||
-                  tx_req_valid || tx_rsp_valid || tx_dat_valid ||
-                  rsp_rx_busy || dat_rx_busy || snoop_busy ||
-                  wdat_busy || cache_busy ||
-                  pending_wdat_valid_q || compack_valid_q ||
-                  mu_compack_valid_q ||
-                  cpu_resp_valid_q || strex_fail_resp_q || fe_busy;
+    wire core_busy = (outstanding_count != 16'd0) ||
+                     tx_req_pending || tx_rsp_pending || tx_dat_pending ||
+                     rsp_rx_busy || dat_rx_busy || snoop_busy ||
+                     wdat_busy || cache_busy ||
+                     pending_wdat_valid_q || compack_valid_q ||
+                     mu_compack_valid_q ||
+                     cpu_resp_valid_q || strex_fail_resp_q || fe_busy;
+
+    // System coherency (B15.2). The node joins as soon as it is asked to.
+    // To leave it stops taking CPU requests, lets its transactions finish,
+    // flushes the cache (dirty lines go out as WriteBackFull) and lowers
+    // SYSCOREQ only when all of that is done; it keeps answering snoops
+    // until SYSCOACK falls. With the external L1 the node cannot flush the
+    // cache, so it never leaves.
+    wire sysco_want = (USE_EXTERNAL_L1_SNOOP != 0) ? 1'b1 : sysco_connect;
+    reg  syscoreq_q;
+    reg  sysco_flush_q;
+    wire sysco_enabled = syscoreq_q && syscoack;
+    wire sysco_leave = !sysco_want && sysco_enabled;
+    // B15.2.1: activity is signalled for the whole state transition.
+    wire sysco_busy = (sysco_want != syscoreq_q) || (syscoreq_q != syscoack);
+
+    assign sysco_cpu_open = sysco_want && sysco_enabled;
+    assign cache_flush_valid = sysco_flush_q;
+    assign syscoreq = syscoreq_q;
+
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            syscoreq_q <= 1'b0;
+            sysco_flush_q <= 1'b0;
+        end else begin
+            if (!sysco_leave)
+                sysco_flush_q <= 1'b0;
+            else if (!core_busy)
+                sysco_flush_q <= 1'b1;
+
+            // Four-phase handshake: SYSCOREQ only changes while SYSCOACK
+            // has the same value.
+            if (sysco_want && !syscoreq_q && !syscoack)
+                syscoreq_q <= 1'b1;
+            else if (sysco_leave && sysco_flush_q && cache_flush_done &&
+                     !core_busy)
+                syscoreq_q <= 1'b0;
+        end
+    end
+
+    assign busy = core_busy || reservation_valid || sysco_busy;
 endmodule

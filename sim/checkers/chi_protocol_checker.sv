@@ -37,7 +37,8 @@
 //   DVM              (2.7) B8: DVMOp is Size 8B, Order 0, no ExpCompAck; its
 //                          payload is one NonCopyBackWriteData beat with
 //                          BE[7:0], DataID 0; Comp only after it; the MN
-//                          snoops every other RN once (no Sync of its own,
+//                          snoops every other RN in the coherency domain
+//                          once (no Sync of its own,
 //                          not the requester), after the payload; SnpResp
 //                          only after both parts; Comp/SnpResp Resp zero
 //   MKUNIQUE_COMPACK (2.8) while an RN owes the CompAck of a CleanUnique or
@@ -87,7 +88,11 @@ module chi_protocol_checker #(
 
     input [NUM_RN-1:0] snp_valid,
     input [NUM_RN-1:0] snp_ready,
-    input [NUM_RN*`CHI_SNP_W(NODE_ID_W)-1:0] snp_flit
+    input [NUM_RN*`CHI_SNP_W(NODE_ID_W)-1:0] snp_flit,
+
+    // SYSCOREQ of each RN (B15): an RN outside the coherency domain gets no
+    // SnpDVMOp.
+    input [NUM_RN-1:0] rn_in_domain
 );
     localparam integer NUM_REQ_TGT = NUM_HN + NUM_SN + NUM_MN;
     localparam integer NUM_NODES   = NUM_RN + NUM_HN + NUM_SN + NUM_MN;
@@ -150,6 +155,8 @@ module chi_protocol_checker #(
         bit                  is_dvm;
         int                  need_beats;
         bit [63:0]           dvm_snooped;
+        // RNs seen outside the coherency domain while the DVMOp was open.
+        bit [63:0]           dvm_out;
         bit                  retried;
         bit                  got_dbid;
         bit                  got_comp;
@@ -207,6 +214,8 @@ module chi_protocol_checker #(
     // DVMOp being served by each MN (its txns key); the MN takes one at a
     // time.
     longint dvm_active [int];
+    // RNs outside the coherency domain in this cycle.
+    wire [63:0] dvm_out_now = {{(64-NUM_RN){1'b0}}, ~rn_in_domain};
     int     rule_cnt [string];
 
     bit     enabled;
@@ -450,6 +459,7 @@ module chi_protocol_checker #(
         t.is_write      = op_is_write(op) || t.is_dvm;
         t.need_beats    = t.is_dvm ? 1 : BEATS;
         t.dvm_snooped   = '0;
+        t.dvm_out       = dvm_out_now;
         t.ack_on_comp   = ((op == `CHI_REQ_CLN_UNIQUE) ||
                            (op == `CHI_REQ_MK_UNIQUE)) && node_is_rn(t.src);
         if (t.is_dvm) begin
@@ -775,11 +785,14 @@ module chi_protocol_checker #(
                                     $sformatf("DVMOp Comp (dbid=%0b payload=%0d Resp=%0d): %s",
                                               txns[k].got_dbid, txns[k].wbeats,
                                               f[RSP_RESP_LSB +: 3], tstr(txns[k])));
-                            // Every RN but the requester was snooped once.
+                            // Every RN but the requester was snooped
+                            // once, unless it was outside the coherency
+                            // domain while the DVMOp was open (B15).
                             if ((resperr == `CHI_RESPERR_OK) &&
-                                (txns[k].dvm_snooped !=
+                                ((txns[k].dvm_snooped & ~txns[k].dvm_out) !=
                                  ((((64'd1 << NUM_RN) - 64'd1)) &
-                                  ~(64'd1 << txns[k].src))))
+                                  ~(64'd1 << txns[k].src) &
+                                  ~txns[k].dvm_out)))
                                 err("SPEC_DVM",
                                     $sformatf("DVMOp completed after SnpDVMOp to RN mask 0x%0h: %s",
                                               txns[k].dvm_snooped, tstr(txns[k])));
@@ -1110,6 +1123,7 @@ module chi_protocol_checker #(
     // Sampling
     // ------------------------------------------------------------------
     integer ch_i;
+    longint dvm_k;
 
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
@@ -1128,6 +1142,13 @@ module chi_protocol_checker #(
             for (ch_i = 0; ch_i < NUM_NODES; ch_i = ch_i + 1)
                 if (dat_valid[ch_i] && dat_ready[ch_i])
                     on_dat(dat_flit[ch_i*DAT_W +: DAT_W]);
+            if (dvm_active.num() != 0) begin
+                foreach (dvm_active[dvm_mn]) begin
+                    dvm_k = dvm_active[dvm_mn];
+                    if (txns.exists(dvm_k))
+                        txns[dvm_k].dvm_out = txns[dvm_k].dvm_out | dvm_out_now;
+                end
+            end
             if ((cycle % 256) == 0)
                 check_liveness();
             n_open = txns.num() + snps.num() + acks.size();

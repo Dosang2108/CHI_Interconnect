@@ -1,4 +1,4 @@
-# CHI Interconnect: trạng thái lộ trình sửa lỗi và kế hoạch tiếp theo (2026-09-24, cập nhật 2026-10-01: xong Giai đoạn 2 trừ UCE)
+# CHI Interconnect: trạng thái lộ trình sửa lỗi và kế hoạch tiếp theo (2026-09-24, cập nhật 2026-10-07: xong Giai đoạn 2 trừ UCE; xong Giai đoạn 3)
 
 Tài liệu này đối chiếu lộ trình 4 giai đoạn trong bản review AMBA 5 CHI (IHI0050H) với RTL hiện tại ở `D:\Github\CHI_Interconnect`. Nó ghi lại mục nào đã sửa và mục nào còn tồn đọng, rồi lập kế hoạch cho phần còn lại.
 
@@ -13,7 +13,13 @@ Testbench: `tb_CHI.sv` = `CHI_Interconnect.srcs/sim_1/new/tb_CHI.sv`.
 
 **Regression hiện tại** (`fix/phase1-correctness` = `a16a0a5`, sau 2.9, `CHK_SPEC_ALL` = 11 luật spec): tb_CHI T01..T56 PASS ở cả chế độ mặc định lẫn `CHI_SIM_REAL_ICG +CG_ALWAYS`, 0 lỗi checker và scoreboard. Regression 14/14, stress 24/24 (seed 1–8 × rn2/rn3/icg, lượt `p29s2`), `tb_chi_soc_cluster_ip_deep` 13/13.
 
-## Tổng kết tiến độ (2026-10-01)
+**Sau Giai đoạn 3 bước 3.2** (`work/p30-link` = `b155a73`, `CHK_SPEC_ALL` = 13 luật spec, thêm `SPEC_LINK_CREDIT` và `SPEC_LINK_FLITPEND`): regression 16/16 (thêm `tb_riscv_core_amo` và `tb_chi_link_layer`), stress 24/24, tb_CHI T01..T56 PASS ở cả hai chế độ, 0 lỗi credit và FLITPEND trên cả 8 nhóm link.
+
+**Sau Giai đoạn 3 bước 3.3** (2026-10-05, `CHK_SPEC_ALL` = 14 luật spec, thêm `SPEC_LINK_ACTIVE`): regression 16/16, stress 24/24, tb_CHI T01..T56 PASS ở cả hai chế độ. Ở chế độ `CHI_SIM_REAL_ICG +CG_ALWAYS` mỗi link về STOP 128 lần trong một lượt tb_CHI, 0 lỗi `SPEC_LINK_ACTIVE`, và clock vẫn tắt được (`cg_gated_cycles` = 12413). `tb_chi_link_layer` có 21 case, 6 case bật/tắt link ngẫu nhiên.
+
+**Sau Giai đoạn 3 bước 3.4** (2026-10-07, `CHK_SPEC_ALL` = 16 luật spec, thêm `SPEC_SACTIVE` và `SPEC_SYSCO`): regression 16/16, stress 24/24, tb_CHI T01..T57 PASS ở cả hai chế độ, 0 lỗi checker và scoreboard. Ở chế độ `CHI_SIM_REAL_ICG +CG_ALWAYS` clock vẫn tắt được (`cg_gated_cycles` = 12449).
+
+## Tổng kết tiến độ (2026-10-07)
 
 **Đã sửa** (mỗi mục có commit, test và regression sạch; chi tiết ở các bảng bên dưới):
 
@@ -22,7 +28,8 @@ Testbench: `tb_CHI.sv` = `CHI_Interconnect.srcs/sim_1/new/tb_CHI.sv`.
 | Bước 0 | 0.1 git baseline, 0.2 chạy lại SoC TB (2 lỗi TB có sẵn đã sửa), 0.3 regression chung |
 | Giai đoạn 1 | P0-1 (SF merge), P0-2 (T46), P0-3 / 1.5 đầy đủ (slot DBID ở SN), P0-4 / 1.6 (cache RN thật, A1), N-1, N-2, N-3, N-4, 1.2 (bỏ timeout chức năng), 1.3 (TxnID snoop do home cấp, trong 2.3), 1.4 (TxnID HN→SN), 1.7 (clock gate + `fabric_clear`) |
 | Giai đoạn 2 | 2.1 CompAck/WriteData = DBID, 2.2 Resp CompData, 2.3 SnpRespData, 2.4 CompDBIDResp + DBID của SN, 2.5 exclusive B6.3, 2.6a DAT 128 bit (gồm O2), 2.6b opcode 7/5 bit, 2.6c layout B13.6–B13.9, 2.7 DVM B8, 2.8 CompAck cho MakeUnique, 2.9 SnpRespFwded/SnpRespDataFwded |
-| Giai đoạn 4 | 4.1 scoreboard coherence (RN nội bộ + L1 ngoài), 4.2 checker giao thức (11 luật spec), 4.3 stress ngẫu nhiên + `run_stress_seeds.ps1` |
+| Giai đoạn 3 | 3.0 luật `SPEC_LINK_CREDIT` + opcode LCrdReturn, 3.5 TB đơn vị link, 3.1a credit thật node → fabric, 3.1b credit thật fabric → node, 3.2 FLITPEND, 3.3 LINKACTIVE (FSM activate/deactivate, trả credit bằng LCrdReturn, clock gate chờ mọi link về STOP), 3.4 TX/RXSACTIVE + SYSCOREQ/SYSCOACK (RN tự flush rồi rời coherency domain, HN/MN không snoop RN ngoài domain, snoop filter xóa RN đã rời) |
+| Giai đoạn 4 | 4.1 scoreboard coherence (RN nội bộ + L1 ngoài), 4.2 checker giao thức (16 luật spec), 4.3 stress ngẫu nhiên + `run_stress_seeds.ps1` |
 
 **Chưa sửa / còn mở:**
 
@@ -30,12 +37,13 @@ Testbench: `tb_CHI.sv` = `CHI_Interconnect.srcs/sim_1/new/tb_CHI.sv`.
 |---|---|---|
 | UCE ở RN | ⏸ để sau | RN chưa có trạng thái UCE nên không CleanUnique từ I. Mục duy nhất còn lại của Giai đoạn 2. |
 | STREX ở chế độ L1 ngoài | ⏸ để sau | Vẫn gửi WriteUnique (tham số `STREX_CLEAN_UNIQUE` chưa ai dùng), vì SoC chưa dùng LDREX/STREX qua đường này. |
-| **Giai đoạn 3** link layer (3.1–3.5) | ❌ chưa bắt đầu | Credit thật/LCRDV, FLITPEND, LINKACTIVE, TX/RXSACTIVE, SYSCOREQ/ACK, BFM link. **Việc kế tiếp.** |
-| 4.4 CoreMark trong regression | ❌ | CoreMark dual-core treo (lỗi có sẵn phía firmware/RISC-V, giống baseline), đang là task riêng. Sau đó gắn scoreboard L1 vào TB CoreMark. |
+| SYSCO ở chế độ L1 ngoài | ⏸ để sau | RN không flush được L1 của core nên luôn ở trong coherency domain (`SYSCO_CTRL` bị bỏ qua). Cần cổng flush/"đã rỗng" từ L1. |
+| Giao dịch của RN ngoài domain | ⏸ để sau | RN ngoài domain không nhận lệnh CPU (`cpu_req_ready` thấp); chưa hỗ trợ giao dịch không cache (ReadOnce). |
+| 4.4 CoreMark trong regression | ❌ | TB CoreMark elaborate lại được (`796aea9`: tham chiếu `pos_used_unused` đã đổi tên từ 1.7). CoreMark dual-core vẫn timeout sau 3 triệu chu kỳ, giống hệt ở `515120f` (trước Giai đoạn 3), nên không do link layer; đang là task riêng. Sau đó gắn scoreboard L1 vào TB CoreMark. |
 | 4.3 phần còn lại | ❌ | Bỏ barrier giả trong stress; lên lịch chạy stress định kỳ. |
 | O1 băng thông fabric | ❌ | `chi_flit_reg_slice` vẫn half-buffer. |
 | O3 LLC-hit qua read tracker | ❌ | FSM chính vẫn bị giữ ở SEND_DAT/WAIT_ACK. |
-| Git | ❌ | `fix/phase1-correctness` chưa push, `main` vẫn là baseline `e9aa824`; các nhánh `work/*` đã gộp, có thể xóa. |
+| Git | 🟡 | `fix/phase1-correctness` có đủ Giai đoạn 1–3 (`work/p30-link` đã gộp; 3.4 là `9b3605b`). Repo dev không có remote và `main` của nó vẫn là baseline `e9aa824`. Mã CHI lên GitHub qua `scripts/export_github.sh` (repo phẳng); Giai đoạn 3 được export ngày 2026-10-07. |
 
 ## Cập nhật tiến độ (2026-09-25, branch `fix/phase1-correctness`)
 
@@ -141,6 +149,27 @@ Testbench: `tb_CHI.sv` = `CHI_Interconnect.srcs/sim_1/new/tb_CHI.sv`.
 |---|---|---|
 | **2.9** SnpRespFwded / SnpRespDataFwded | ✅ (commit 2.9) | **Spec**: snoopee của SnpSharedFwd/SnpUniqueFwd gửi CompData cho requester và **một** phản hồi cho home: SnpRespFwded (không dữ liệu) hoặc SnpRespDataFwded (có dữ liệu, DAT opcode 0x6). Resp = trạng thái cuối của snoopee, FwdState = Resp của CompData đã gửi (Table B4.58, B4.59, B13.37). Trước 2.9, RN trả SnpRespFwded mang mã nội bộ `{0,dirty,hit}` rồi còn gửi thêm SnpRespData làm bản sao về home. **RN** (`chi_rn_snoop_handler.v`): chỉ dòng dirty mới được forward. SnpSharedFwd: RN giữ dòng dirty, gửi CompData_SC và SnpResp_SD_Fwded_SC. SnpUniqueFwd: RN chuyển dòng dirty cho requester, gửi CompData_UD_PD và SnpResp_I_Fwded_UD_PD. Riêng L1 ngoài (SoC): L1 xóa dirty khi nhận SnpSharedFwd, nên RN gửi CompData_SC rồi **SnpRespData_SC_PD_Fwded_SC** về home (`forward_home_q`), không gửi SnpRespFwded. **HN** (`chi_hn_f.v`): bỏ `forward_copy_expected_q` và mã `CHI_RESP_DIRTY_BIT`. Chỉ phản hồi có dữ liệu mới làm dòng dirty ở home. SnpRespDataFwded đi qua LLC; SnpRespFwded chỉ cập nhật SF. **Fwd snoop chỉ gửi khi snoop đúng một RN-F** (`chi_hn_snoop_generator.v`, B4.8.3.4). Có từ hai sharer trở lên thì mọi sharer nhận SnpShared/SnpUnique thường và home cấp dữ liệu. Trước đây HN gửi Fwd snoop tới mọi sharer: với 3 RN, một sharer forward còn sharer kia trả SnpResp_I, và nhánh phản hồi thường cuối cùng đưa tracker về `SNP_ST_REPLAY`, nên requester nhận CompData hai lần (stress rn3 fail 8/8, `COMPDATA_UNKNOWN_TXN`). **Checker**: luật `SPEC_SNPRESP_FWD` kiểm tra: mỗi Fwd snoop có đúng một phản hồi; cặp (Resp, FwdState) hợp lệ; FwdState bằng Resp của CompData; snoopee đã forward thì không trả SnpResp/SnpRespData thường; khi một Fwd snoop còn mở thì home không snoop RN khác trên cùng dòng. Bộ đếm `SnpRespFwded=`/`SnpRespDataFwded=` in trong `CHI_CHK SUMMARY`. **Test**: T36/T37 của tb_CHI viết lại (Resp/FwdState của cả hai loại, không có dữ liệu về home sau SnpRespFwded, RN1 nhận UD sau ReadUnique). **tb_chi_soc_cluster_ip_deep T9** (mới) là test duy nhất chạy qua nhánh SnpRespDataFwded: L1 core1 giữ dòng dirty, core0 ReadShared cả dòng. Test kiểm SnpSharedFwd, CompData_SC mang dữ liệu dirty tới core0, SnpRespDataFwded SC_PD/FwdState SC tới HN, HN ghi dòng về bộ nhớ, L1 core1 còn valid và sạch, SF có cả hai core. Các test sau trong TB này lùi một số (T10..T13). CoreMark dual-core không chạm nhánh này vì TB đặt `USE_EXTERNAL_L1_SNOOP(0)`. **dcache và CompData_UD_PD**: an toàn. dcache chỉ gửi ReadUnique khi `req_write_q`=1 và lúc fill đặt `dirty = req_write_q` (`dcache.v:433`), nên dòng được cài dirty ngay trong chu kỳ fill; T02 của `tb_riscv_dcache_writeback_chi` chứng minh (eviction ghi lại dữ liệu store). **RED**: trên RTL cũ, FWD_ONLY báo 3 lỗi `SPEC_SNPRESP_FWD` và T36 fail. Khi bỏ điều kiện một sharer, rn3 s8 báo `SPEC_SNPRESP_FWD` ở 8,1 µs, trước `COMPDATA_UNKNOWN_TXN`. **Kết quả**: regression 14/14; stress 24/24 (rn2, rn3, icg × 8 seed; 0 lỗi checker và scoreboard); tb_CHI T01..T56 ở chế độ mặc định và `CHI_SIM_REAL_ICG +CG_ALWAYS` (clock bị tắt 13 548 chu kỳ), 0 lỗi checker (719 request, 148 snoop) và scoreboard; deep TB 13/13. |
 
+## Cập nhật tiến độ 2026-10-01: Giai đoạn 3 (branch `work/p30-link`)
+
+| Mục | Trạng thái | Nội dung |
+|---|---|---|
+| **3.0** luật `SPEC_LINK_CREDIT`, opcode LCrdReturn | ✅ `4596ffd` | **Checker** `chi_link_credit_checker.sv` (bind vào `chi_top`, một instance cho mỗi kênh và mỗi chiều, tổng 8): mỗi link có bộ đếm credit riêng; FLITV khi credit = 0 là lỗi; credit nhận ở chu kỳ t chỉ dùng được từ t+1; LCRDV vượt 15 hoặc vượt số buffer của bên nhận là lỗi (B14.2.1). `chi_top` đặt tên dây LCRDV cho từng link (`*_src_lcrdv`, `*_in_lcrdv`, `*_tgt_lcrdv`, `*_out_lcrdv`). `chi_defs.vh` thêm `CHI_REQ_LCRD_RETURN`, `CHI_SNP_LCRD_RETURN`, `CHI_DAT_OPCODE_LCRD_RETURN` (B13.11). **RED**: trên RTL cũ tb_CHI vẫn PASS chức năng nhưng luật báo 542 lỗi ở DAT node → fabric (chủ yếu HN): khi input buffer của fabric backpressure, FLITV bị giữ nhiều chu kỳ mà không có credit. |
+| **3.5** TB đơn vị link | ✅ `4596ffd` | Module mới: `chi_link_tx` (một thanh ghi giữ, credit bắt đầu từ 0, FLITV chỉ khi có credit, FLITPEND trước FLITV), `chi_link_rx` (FIFO, cấp một credit cho mỗi ô trống, trả credit khi pop), `chi_link_lcrd_gen` (bộ cấp credit, dùng chung cho `chi_link_rx` và input FIFO của fabric). `tb_chi_link_layer`: 15 case với nguồn, đích, độ trễ dây và độ trễ LCRDV ngẫu nhiên; kiểm thứ tự, mất/lặp flit, FLITPEND, tràn RX và bảo toàn credit (credit ở TX + trên dây + trong FIFO + chưa cấp = độ sâu). Đã thêm vào `run_regression.ps1`. **RED bằng đột biến**: dùng credit ngay chu kỳ nhận, trả credit lúc nhận thay vì lúc pop, và bỏ ready ở TX đều bị bắt. Activate/deactivate ngẫu nhiên để lại cho 3.3. |
+| **3.1a** credit thật node → fabric | ✅ `5dbca06` | `chi_link_layer` bọc `chi_link_tx`: cổng TX của node là cổng link thật (`tx_*_valid` = FLITV, `tx_*_lcrdv` = LCRDV). Trong `chi_top`, mỗi input FIFO của fabric cấp `FABRIC_FIFO_DEPTH` credit sau reset và thêm một credit mỗi lần pop (`*_in_pop_pulse`); có `$stop` nếu flit gặp FIFO đầy. Các đường TX trước đây đi thẳng vào fabric nay qua link: **HN** có link SNP (target ID đi kèm flit), link REQ tới SN (cổng `mem_req_*` cũ thành `tx_req_*`) và một link DAT duy nhất. Arbiter round-robin giữa CompData và WriteData tới SN chuyển từ `chi_top` vào `chi_hn_f`, đứng trước link DAT; **MN** có link SNP và RSP. `busy` của node tính theo FLITPEND, nên clock gate không tắt clock khi node còn giữ flit chờ credit. **Testbench**: monitor coi `valid && lcrdv` là flit đã gửi nay chỉ dùng FLITV; T01/T13 xem arbiter bên trong `chi_hn_f`; các test HN slot giữ DAT ở ranh giới arbiter → link của HN (ép cả `dat_arb_valid` lẫn `dat_arb_ready`); `tb_chi_rn_f_qos_xbar4` cấp cho RN một credit REQ. tb_CHI chạy 445,6 µs so với 438,3 µs (+1,7%). |
+| **3.1b** credit thật fabric → node | ✅ `4856529` | Mỗi output của fabric có bộ đếm credit riêng cho node đích (bắt đầu từ 0) và chỉ pop output register khi có credit: FLITV = `*_out_valid && *_out_ready`. Phía nhận là `chi_link_rx` đặt ở ranh giới node trong `chi_top`, sâu `INIT_CRD`, trả LCRDV khi node lấy flit; cổng RX của node vẫn là valid/ready. **Module fabric và arbiter QoS không đổi**, nên rủi ro QoS trong kế hoạch không xảy ra. `chi_link_rx` có `FALLTHROUGH`: flit tới buffer rỗng được đưa cho node ngay trong chu kỳ đó, nên link không thêm độ trễ (tb_CHI vẫn 445,6 µs). Flit nằm trong buffer RX được tính là busy cho clock gate. |
+| **3.2** FLITPEND | ✅ `b155a73` | Node: `tx_*_flitpend` ra cổng của RN/HN/SN/MN (và `chi_hn_i_mn`). Fabric: `chi_channel_slice`/`chi_fabric` thêm `*_out_pend` (flit đang ở hoặc đang vào output register). Checker thêm luật `SPEC_LINK_FLITPEND`: FLITV phải có FLITPEND ở chu kỳ trước (B14.4). **RED bằng đột biến**: FLITPEND chỉ theo flit đang giữ thì TB đơn vị fail ở chu kỳ 3; `out_pend` bỏ phần flit đang vào thì mọi flit fabric → node của tb_CHI đều vi phạm. |
+
+**Băng thông đo được** (`tb_chi_link_layer`, nguồn và đích luôn sẵn sàng, đơn vị flit/chu kỳ):
+
+| Link | Round trip credit | Depth 1 | Depth 2 (IoT) | Depth ≥ 4 |
+|---|---|---|---|---|
+| Node → fabric (FIFO thường) | 3 chu kỳ | 0,33 | 0,67 | 1,0 |
+| Fabric → node (fall-through) | 2 chu kỳ | 0,50 | 1,0 | 1,0 |
+
+Ở profile IoT (`FABRIC_FIFO_DEPTH` = 2), chiều node → fabric bị giới hạn 0,67 flit/chu kỳ khi gửi liên tục. tb_CHI chỉ chậm 1,7%, nên chưa nâng độ sâu. Nếu cần băng thông đầy đủ thì có hai cách: nâng `FABRIC_FIFO_DEPTH` của IoT lên 3, hoặc cho `chi_link_lcrd_gen` trả LCRDV ngay trong chu kỳ pop (round trip còn 2).
+
+**Kết quả sau 3.2**: regression 16/16; stress 24/24; tb_CHI T01..T56 ở chế độ mặc định và `CHI_SIM_REAL_ICG +CG_ALWAYS` (clock bị tắt 13 589 chu kỳ); 0 lỗi `SPEC_LINK_CREDIT` và `SPEC_LINK_FLITPEND` trên cả 8 nhóm link (719 REQ, 1060 RSP, 2767 DAT, 151 SNP flit mỗi chiều).
+
 ## 1. Bảng trạng thái tổng hợp
 
 Ký hiệu: ✅ đã sửa · 🟢 đã đúng từ trước (không cần sửa) · 🟡 mới giảm thiểu hoặc sửa một phần · ❌ chưa sửa
@@ -182,11 +211,13 @@ Ký hiệu: ✅ đã sửa · 🟢 đã đúng từ trước (không cần sửa
 | DVM | ✅ 2.7 | DVMOp → DBIDResp → NonCopyBackWriteData (payload 8 byte) → SnpDVMOp 2 phần tới các RN khác → Comp. Sync theo DVMType; MN không tự chèn Sync, không snoop RN khởi tạo. Luật `SPEC_DVM`; T26, T55. |
 | CompAck của CleanUnique/MakeUnique | ✅ 2.5, 2.8 | RN gửi CompAck (TxnID = DBID của Comp); HN giữ dòng ở `HN_ST_WAIT_ACK` tới khi nhận. Luật `SPEC_MKUNIQUE_COMPACK`; T15, T54, T56. |
 
-### Giai đoạn 3: link layer: ❌ chưa làm gì
+### Giai đoạn 3: link layer: ✅ xong 3.0–3.5
 
-- Chưa có credit thật: phía nhận không phát LCRDV khi giải phóng buffer, thực chất vẫn là bắt tay valid/ready.
-- Toàn bộ RTL không có FLITPEND, LINKACTIVEREQ/ACK, TX/RXSACTIVE, SYSCOREQ/ACK.
-- Các cổng `rx_*_lcrdv` đều để `_unused` trong `chi_top.v` ([:163-165](../chi_top.v#L163)).
+- ✅ Credit thật trên mọi link giữa node và fabric, cả hai chiều (3.1a, 3.1b). Không còn tín hiệu ready ở ranh giới link: FLITV chỉ lên khi bên gửi có L-Credit, và bên nhận trả LCRDV khi buffer được giải phóng.
+- ✅ FLITPEND đi trước FLITV một chu kỳ trên mọi link (3.2).
+- ✅ Luật checker `SPEC_LINK_CREDIT` và `SPEC_LINK_FLITPEND`, TB đơn vị `tb_chi_link_layer` (3.0, 3.5).
+- ✅ LINKACTIVEREQ/ACK trên mọi link (3.3). Mỗi node có hai link (phát và nhận), mỗi link một cặp REQ/ACK cho mọi kênh. Flit và credit chỉ đi ở RUN. Khi DEACTIVATE, bên phát trả từng credit bằng flit LCrdReturn, và bên nhận chỉ hạ ACK khi mọi credit đã về. Clock của fabric chỉ tắt khi mọi link ở STOP. Luật checker `SPEC_LINK_ACTIVE`.
+- ✅ TX/RXSACTIVE của mọi node và SYSCOREQ/SYSCOACK của mọi RN (3.4). TXSACTIVE là cờ busy của node; RXSACTIVE là hoạt động phía interconnect. Mỗi RN vào/ra coherency domain qua CSR `SYSCO_CTRL`: muốn rời thì RN tự flush cache rồi mới hạ SYSCOREQ, HN và MN không snoop RN ngoài domain, và SYSCOACK chỉ hạ khi snoop filter đã xóa RN đó. Luật checker `SPEC_SACTIVE` và `SPEC_SYSCO`; test T57.
 
 ### Giai đoạn 4: kiểm chứng: ✅ 4.1–4.3 và mở rộng stress; 🟡 4.4 còn mở
 
@@ -282,16 +313,46 @@ Làm từ thay đổi cục bộ đến thay đổi lớn. Việc viết lại f
 | 3.1a | **TX node → fabric.** `chi_link_layer`: `tx_out_valid` là FLITV thuần (không có ready); chỉ gửi khi có credit. `chi_top` nối `tx_*_lcrdv` với `*_in_pop_pulse` của fabric. Credit ban đầu = độ sâu input buffer của fabric (≤ 15). `$fatal`/assert: fabric không bao giờ phải từ chối flit đã có credit (`in_ready` phải bằng 1 khi FLITV). | Regression 14/14, stress 24/24, tb_CHI ICG. `SPEC_LINK_CREDIT` sạch trên chiều TX. | M |
 | 3.1b | **RX fabric → node.** Output của fabric (`chi_output_reg`/arbiter) có bộ đếm credit theo từng đích; arbiter chỉ grant khi đích còn credit. RX của node dùng FIFO sâu `INIT_CRD` (thay skid) và trả LCRDV khi **pop**, không phải khi nhận. Nối `rx_*_lcrdv` (bỏ `_unused`). | Như 3.1a, cộng assert FIFO RX không bao giờ tràn. Đo băng thông: nếu `INIT_CRD`=2 không phủ được round-trip credit thì throughput tụt; ghi số liệu, có thể nâng IoT lên 3–4. | M–L |
 | 3.2 | **FLITPEND.** TX đưa FLITPEND lên trước FLITV một chu kỳ (hoặc giữ liên tục khi đang có flit chờ). Luật checker: FLITV phải có FLITPEND ở chu kỳ trước. | Checker sạch; không đổi hành vi. | S |
-| 3.3 | **LINKACTIVE (B14.6).** FSM TX STOP → ACTIVATE → RUN → DEACTIVATE, RX trả LINKACTIVEACK. Chỉ gửi flit/LCRDV ở RUN. Khi DEACTIVATE, TX trả hết credit bằng flit LCrdReturn và RX đếm lại đủ credit mới về STOP. Nối với clock gate (1.7): trước khi tắt clock thì deactivate các link, còn wake thì activate. | TB đơn vị (3.5) chạy nhiều vòng activate/deactivate ngẫu nhiên; tb_CHI ICG chạy với deactivate thật. | M |
-| 3.4 | **TXSACTIVE/RXSACTIVE, SYSCOREQ/SYSCOACK.** SACTIVE lấy từ cờ busy theo từng node (1.7). SYSCO theo từng RN: RN chưa ở trong coherency domain thì HN không snoop (mask ở snoop generator). RN chỉ được ra khỏi domain khi cache đã flush và SF không còn liệt kê nó. | Test mới: RN0 ra khỏi domain (flush trước), RN1 đọc/ghi mà không có snoop tới RN0; checker báo lỗi nếu có snoop tới RN ngoài domain. | S–M |
+| 3.3 | ✅ **LINKACTIVE (B14.5.1).** FSM TX STOP → ACTIVATE → RUN → DEACTIVATE, RX trả LINKACTIVEACK. Chỉ gửi flit/LCRDV ở RUN. Khi DEACTIVATE, TX trả hết credit bằng flit LCrdReturn và RX đếm lại đủ credit mới về STOP. Nối với clock gate (1.7): trước khi tắt clock thì deactivate các link, còn wake thì activate. | TB đơn vị (3.5) chạy nhiều vòng activate/deactivate ngẫu nhiên; tb_CHI ICG chạy với deactivate thật. | M |
+| 3.4 | ✅ **TXSACTIVE/RXSACTIVE, SYSCOREQ/SYSCOACK.** SACTIVE lấy từ cờ busy theo từng node (1.7). SYSCO theo từng RN: RN chưa ở trong coherency domain thì HN không snoop (mask ở snoop generator). RN chỉ được ra khỏi domain khi cache đã flush và SF không còn liệt kê nó. | Test mới: RN0 ra khỏi domain (flush trước), RN1 đọc/ghi mà không có snoop tới RN0; checker báo lỗi nếu có snoop tới RN ngoài domain. | S–M |
 | 3.5 | **TB đơn vị link layer** (`tb_chi_link_layer`, làm **song song với 3.0**, trước khi đụng `chi_top`): BFM hai phía với độ trễ LCRDV ngẫu nhiên, pop ngẫu nhiên, activate/deactivate ngẫu nhiên. Kiểm không mất/lặp flit, giữ thứ tự, credit bảo toàn. | Đưa vào `run_regression.ps1`. | M |
 
-**Thứ tự:** 3.0 + 3.5 → 3.1a → 3.1b → 3.2 → 3.3 → 3.4. Mỗi bước một commit, giữ regression 14/14, stress 24/24 và tb_CHI ICG sạch như Giai đoạn 2.
+**Thứ tự:** ✅ 3.0 + 3.5 → ✅ 3.1a → ✅ 3.1b → ✅ 3.2 → ✅ 3.3 → ✅ 3.4. Mỗi bước một commit, giữ regression 16/16, stress 24/24 và tb_CHI ICG sạch như Giai đoạn 2.
+
+**Khác so với kế hoạch (đã làm):**
+- Credit không cấp sẵn theo tham số: bên gửi bắt đầu với 0 credit, bên nhận cấp qua LCRDV sau reset. Nhờ vậy hai phía không phải khớp tham số, và 3.3 chỉ cần chặn việc cấp credit khi link chưa ở RUN (`grant_en` của `chi_link_lcrd_gen`).
+- 3.1b không sửa arbiter: bộ đếm credit đứng sau output register của fabric, trong `chi_top`.
+- Buffer RX của node nằm ở ranh giới node trong `chi_top` (`chi_link_rx`), không nằm trong module node; các cổng `rx_*_lcrdv` cũ của node (= valid && ready) không còn dùng.
+
+**3.3 như đã làm** (2026-10-05):
+- Hai FSM: `chi_link_active_tx` giữ LINKACTIVEREQ (STOP → ACTIVATE → RUN → DEACTIVATE), `chi_link_active_rx` giữ LINKACTIVEACK. Mỗi node có một FSM TX cho link phát của nó (cổng mới `link_want`, `tx_linkactivereq`, `tx_linkactiveack`). Phía fabric của hai link và FSM RX của node nằm trong `chi_top` (`gen_link_active`), cùng chỗ với `chi_link_rx`.
+- Credit và trạng thái link của bên phát nằm trong `chi_link_tx_crd`, dùng chung cho `chi_link_tx` (trong node) và output của fabric (thay `chi_credit_counter`). Ở DEACTIVATE nó phát flit LCrdReturn (opcode 0, cả flit bằng 0) cho từng credit đang giữ, kể cả credit tới muộn.
+- Bên nhận nhận ra LCrdReturn bằng opcode 0. `chi_link_rx` không lưu và không đưa nó lên node. Ở chiều node → fabric, `chi_top` chặn nó trước fabric: `*_flitv` là FLITV đầy đủ, `*_valid` là FLITV đã bỏ LCrdReturn. `chi_link_lcrd_gen` đếm thêm số credit đã cấp chưa dùng (`home` = 0 credit ở ngoài), nên ACK chỉ hạ khi mọi kênh của link đã `home`.
+- Clock gate: `link_wake` là điều kiện bật clock cũ (busy hoặc nguồn wake). Link bật khi `link_wake` và hạ sau `LINK_IDLE_CYCLES` (mặc định 4) chu kỳ rảnh; `chi_cg_en = link_want || !links_stopped`, nên clock chạy tới khi deactivate xong. Khi `cfg_cg_enable` = 0 link không bao giờ hạ.
+- `busy` của node dùng `tx_pending` (có flit protocol đang giữ hoặc đang chào) thay cho FLITPEND. Nếu không, FLITPEND của flit LCrdReturn sẽ giữ `chi_busy` và bật link lại ngay.
+- MN không có kênh DAT phát, nên link DAT vào fabric của MN không được cấp credit (nếu cấp thì không ai trả).
+- Hai monitor B5 từng coi LCrdReturn là flit protocol: `tx_fire_pulse` của `chi_link_layer` giờ chỉ tính flit ở RUN, và bind `chi_snpresp_window_formal` dùng `tx_snp_valid && tx_link_run`.
+- Kiểm RED trên `tb_chi_link_layer` (bản sao, 4 đột biến): hạ ACK không chờ credit, không lọc LCrdReturn ở bên nhận, không trả credit, cấp credit ngoài RUN. Kết quả ghi ở mục 5.
+- Giới hạn: mọi link bật/tắt cùng lúc theo `link_want` chung của `chi_top`, chưa có chính sách riêng cho từng node. Cổng CHI ngoài (boundary adapter) chưa có LINKACTIVE.
+
+**3.4 như đã làm** (2026-10-07):
+- **SACTIVE.** `chi_top` có `node_txsactive` (cờ `busy` của từng node) và `node_rxsactive` (fabric, buffer nhận hoặc node khác đang bận); `chi_busy` tính từ `node_txsactive`. Cờ `busy` của RN tính thêm lúc chuyển trạng thái SYSCO (B15.2.1). Hành vi clock gate không đổi.
+- **Điều khiển.** CSR `SYSCO_CTRL` (0x58, mỗi RN một bit, reset = 1 nên mọi RN tự vào domain) và `SYSCO_STATUS` (0x60, chỉ đọc: [15:0] SYSCOREQ, [31:16] SYSCOACK). Không thêm cổng cho `chi_top`. Hai địa chỉ 0x48/0x50 để dành cho `ERR_MASK`/`ERR_INJECT` như các tài liệu tham chiếu đã ghi.
+- **RN** (`chi_rn_f`, cổng mới `sysco_connect`, `syscoreq`, `syscoack`): chỉ nhận lệnh CPU ở Coherency Enabled. Khi `sysco_connect` hạ: ngừng nhận lệnh, chờ hết giao dịch, flush cache, chờ các WriteBack xong, rồi hạ SYSCOREQ; vẫn trả snoop tới khi SYSCOACK thấp. `chi_rn_cache` có bộ quét flush (`flush_valid`/`flush_done`, trạng thái `ST_FLUSH_READ`): mỗi lượt một way, dòng bẩn vào hàng victim sẵn có (WriteBackFull), dòng sạch bị bỏ.
+- **HN** (`chi_hn_f`, cổng mới `rn_in_domain`, `sysco_quiet`): `chi_hn_snoop_filter` che RN ngoài domain ở cả lúc đọc (lookup, back-invalidate, kể cả kết quả đã giữ lại) lẫn lúc ghi (update), nên snoop generator không bao giờ thấy RN đó. Khi một RN rời, SF quét mọi set để xóa bit của nó (`scrub_pending`). `sysco_quiet[k]` = không còn tracker snoop nào nhắm RN k và SF đã quét xong.
+- **MN** (`chi_mn_dvm`): không gửi SnpDVMOp tới RN ngoài domain (B15: coherency gồm cả DVM); `sysco_quiet` = không còn SnpDVMOp mở.
+- **SYSCOACK** (trong `chi_top`): lên ngay khi SYSCOREQ lên; hạ khi SYSCOREQ thấp và mọi HN, MN đều `sysco_quiet`.
+- **Checker.** File mới `chi_sysco_checker.sv` (bind vào mọi `chi_top`): `SPEC_SACTIVE` (node gửi flit protocol khi TXSACTIVE thấp, node nhận flit khi RXSACTIVE thấp, RN đang chuyển trạng thái SYSCO mà TXSACTIVE thấp) và `SPEC_SYSCO` (bắt tay 4 pha; snoop tới RN ở Coherency Disabled). Luật `SPEC_DVM` của `chi_protocol_checker` giờ miễn cho RN ngoài domain (cổng mới `rn_in_domain`).
+- **Test T57** (`SYSCO_ONLY`): RN0 giữ một dòng bẩn, một dòng sạch và một dòng chung với RN1, rồi rời domain. Kiểm: cache RN0 rỗng, SF không còn liệt kê RN0 đúng lúc SYSCOACK hạ, RN0 không nhận lệnh CPU, RN1 đọc được dữ liệu bẩn của RN0 và đọc/ghi/DVMOp trên các dòng cũ mà không có snoop nào tới RN0. Sau đó RN0 vào lại, đọc được dữ liệu RN1 đã ghi và bị snoop trở lại.
+- Kiểm RED của T57 (đột biến trên bản sao, kết quả ghi ở mục 5).
+- Giới hạn: chế độ L1 ngoài không rời domain được; RN ngoài domain không chạy giao dịch nào; stress ngẫu nhiên chưa bật/tắt SYSCO.
 
 **Rủi ro cần để ý:**
 - 3.1b đụng arbiter của fabric (QoS/aging), nên phải chạy `tb_chi_fabric_qos_xbar3`/`tb_chi_rn_f_qos_xbar4` kỹ.
 - Deadlock: credit chỉ quay về khi bên nhận pop, nên phụ thuộc giữa các kênh giữ nguyên như valid/ready hiện tại. Riêng DAT sink chung của HN (xem 1.5) phải kiểm lại.
 - Các TB đang `force` `tx_*_link_valid/ready` (T53, T56) phải chuyển sang giữ credit, vì không còn tín hiệu ready.
+
+Kết quả với ba rủi ro trên: arbiter không bị đụng tới; không thấy deadlock ở DAT sink của HN (stress 24/24, liveness của checker sạch); T53 và T56 không phải sửa vì chúng ép ở phía protocol, trước link. Các test phải sửa là T01/T13 và hai test HN slot, vì chúng ép `dat_node_in_ready` của fabric.
 
 ### Giai đoạn 4: kiểm chứng (làm trước Giai đoạn 2)
 
@@ -320,19 +381,19 @@ Làm từ thay đổi cục bộ đến thay đổi lớn. Việc viết lại f
 ✅ 2.6a (DAT 128, +O2) → 2.6b (opcode 7/5 bit) → 2.6c (layout B13.6–B13.9)
 ✅ 2.7 (DVM B8) → 2.8 (CompAck cho MakeUnique) → 2.9 (SnpRespFwded/SnpRespDataFwded, Fwd snoop một RN-F)
   → (UCE, để sau)
-  → Giai đoạn 3
+✅ 3.0 + 3.5 (checker credit, TB đơn vị link) → 3.1a (credit node → fabric) → 3.1b (credit fabric → node) → 3.2 (FLITPEND) → 3.3 (LINKACTIVE) → 3.4 (SACTIVE, SYSCO)
 O1, O3: xen vào khi regression đã ổn định.
 Song song: sửa lỗi CoreMark dual-core có sẵn (task riêng), rồi gắn scoreboard L1 vào TB CoreMark.
 ```
 
-**Việc nên làm tiếp ngay:** Giai đoạn 2 chỉ còn UCE (để sau), nên chuyển sang Giai đoạn 3. Lên lịch `run_stress_seeds.ps1` chạy định kỳ (một lượt 24 seed chỉ mất vài phút). Bài học 2.9: stress rn3 là cấu hình duy nhất có hai sharer cùng lúc, nên phải chạy đủ 24 seed trước khi commit.
+**Việc nên làm tiếp ngay:** Giai đoạn 3 đã xong. Lên lịch `run_stress_seeds.ps1` chạy định kỳ (một lượt 24 seed chỉ mất vài phút). Bài học 2.9: stress rn3 là cấu hình duy nhất có hai sharer cùng lúc, nên phải chạy đủ 24 seed trước khi commit.
 
 ## 5. Bàn giao cho phiên tiếp theo
 
 **Trạng thái git**
 - `main` = `e9aa824` (baseline).
-- `fix/phase1-correctness` = Giai đoạn 1, Giai đoạn 4, 1.5, 2.1–2.9, re-sync core RISC-V + RV32A (`4329555`), check out ở `D:\Github\CHI_Interconnect`. Working tree chính giờ sạch. Repo **chưa có remote**, nên chưa push được.
-- Worktree `D:\Github\CHI_p25`: nhánh `work/p30-link` (tách từ `fix/phase1-correctness`) cho Giai đoạn 3.
+- `fix/phase1-correctness` = Giai đoạn 1, Giai đoạn 4, 1.5, 2.1–2.9, re-sync core RISC-V + RV32A (`4329555`), `export_github.sh`, Giai đoạn 3 (3.0–3.5), check out ở `D:\Github\CHI_Interconnect`. Working tree chính giờ sạch. Repo **chưa có remote**, nên chưa push được.
+- Worktree `D:\Github\CHI_p25`: nhánh `work/p30-link`, đã gộp vào `fix/phase1-correctness` (2026-10-05). Vì `fix/phase1-correctness` có thêm hai commit `export_github.sh` sau khi tách nhánh, lần gộp dùng merge commit `f852bcb` (gộp `fix/phase1-correctness` vào `work/p30-link`, chạy lại regression, rồi fast-forward), nên các hash `4596ffd`, `5dbca06`, `4856529`, `b155a73` giữ nguyên. 3.3, bản sửa TB CoreMark (`796aea9`) và 3.4 cũng làm trên nhánh này rồi fast-forward.
 - Worktree `D:\Github\CHI_verify`: detached HEAD ở `fix/phase1-correctness`, dùng làm worktree mô phỏng thứ hai.
 - Các nhánh `work/p02`…`work/p29` đã gộp và đã xóa (2026-10-01). Còn `verif/4.1-4.2-checkers`, `fix/phase1-p03`, `fix/phase1-snoop-txnid` (đều đã gộp) và hai nhánh `claude/*` có worktree riêng.
 
@@ -344,7 +405,7 @@ Song song: sửa lỗi CoreMark dual-core có sẵn (task riêng), rồi gắn s
 - Stress nhiều seed: `scripts/run_stress_seeds.ps1 [-Seeds 1,2,3] [-Configs rn2,rn3,icg] [-Prefix p]` (mặc định 8 seed × 3 cấu hình, khoảng 6 phút với RTL sau 2.9).
 - Stress đơn: `-Top tb_chi_random_stress -PlusArgs "SEED=n OPS=n [CG] [NO_WBFULL] CHK_SPEC_ALL" [-Defines "STRESS_NUM_RN=3 CHI_SIM_REAL_ICG"]`.
 - Lần vết một dòng: thêm `TRACE_LINE=<hex addr>` vào PlusArgs.
-- Plusarg debug của tb_CHI: `P0_ONLY`, `T31_ONLY`, `WDOG_ONLY`, `SNTXN_ONLY`, `EVW_ONLY`, `BIST_ONLY`, `LLC_ONLY` (T46), `A1_ONLY` (T47..T51), `VIC_ONLY` (T51), `RAW_ONLY` (T52), `MW_ONLY` (T53, thêm `MW_TRACE` để in beat tới SN), `XR_ONLY` (T54), `DVM_ONLY` (T26, T55), `MU_ONLY` (T56), `CG_ALWAYS`, `TRACE_WDAT`.
+- Plusarg debug của tb_CHI: `P0_ONLY`, `T31_ONLY`, `WDOG_ONLY`, `SNTXN_ONLY`, `EVW_ONLY`, `BIST_ONLY`, `LLC_ONLY` (T46), `A1_ONLY` (T47..T51), `VIC_ONLY` (T51), `RAW_ONLY` (T52), `MW_ONLY` (T53, thêm `MW_TRACE` để in beat tới SN), `XR_ONLY` (T54), `DVM_ONLY` (T26, T55), `MU_ONLY` (T56), `SYSCO_ONLY` (T57), `CG_ALWAYS`, `TRACE_WDAT`.
 
 **Lưu ý kỹ thuật**
 - xsim 2024.1 crash kernel khi truyền `cond ? "A" : "B"` (chuỗi literal) vào task, nên dùng if/else. Nó cũng không nhận `void'($urandom(seed))`. Trong vòng `for` trên queue struct, so sánh part-select của field (`q[i].addr[31:6] == x[31:6]`) có thể luôn ra false mà không báo lỗi: chép phần tử ra biến cục bộ rồi so sánh (xem `SPEC_MKUNIQUE_COMPACK` trong checker).
@@ -353,11 +414,22 @@ Song song: sửa lỗi CoreMark dual-core có sẵn (task riêng), rồi gắn s
 - Mô hình AXI của tb_CHI tuần tự hóa AR sau lệnh ghi đang mở ở SN, nên muốn tái hiện hazard đọc/ghi phải giữ dữ liệu ở phía RN (xem T52).
 - TB nào backdoor LLC/bộ nhớ phải gọi `sb_forget_line(addr)`; TB SoC nào seed L1 bằng backdoor phải gọi `sbl1_exempt_line(addr)`.
 - Khi ép (`force`) một cổng handshake, phải ép cả valid lẫn ready ở cùng một phía, nếu không flit sẽ bị lặp. Đừng ép `tx_in_ready` của `chi_link_layer` (monitor B5 báo `tx_fire while !ready`); giữ WriteData ở ranh giới engine→link (`wdat_engine_ready` + `tx_dat_link_valid`), như T53.
-- Mỗi lần gọi `run_tb_chi_xsim.ps1`, `run_regression.ps1` hay `run_stress_seeds.ps1` phải là một lệnh PowerShell riêng: script `exit` sẽ cắt các lệnh nối sau nó.
+- Mỗi lần gọi `run_tb_chi_xsim.ps1`, `run_regression.ps1` hay `run_stress_seeds.ps1` phải là một lệnh PowerShell riêng: script `exit` sẽ cắt các lệnh nối sau nó. `run_tb_chi_xsim.ps1` còn `Set-Location` vào `reports/<Tag>`, nên khi gọi nhiều lần trong một lệnh phải dùng đường dẫn tuyệt đối tới script.
+- Link layer (từ 3.1): cổng TX của node là FLITV/LCRDV, không có ready. Monitor trong TB coi mỗi chu kỳ `tx_*_valid` = 1 là một flit. Muốn chặn một node gửi thì ép ở phía protocol trước link (ví dụ `dat_arb_valid` và `dat_arb_ready` trong `chi_hn_f`), đừng ép `*_in_ready` của fabric: flit đã có credit sẽ gặp FIFO đầy và `chi_top` `$stop`.
+- `tb_CHI.sv` include `formal/chi_formal_binds.v`, nên đổi cổng hay tham số của module bị bind (ví dụ `chi_link_layer`) phải sửa cả file đó. MN trong `chi_top` đi qua wrapper `chi_hn_i_mn`: thêm cổng cho `chi_mn_dvm` thì thêm cả ở wrapper.
+- File RTL mới phải thêm vào `CHI_Interconnect.xpr` (file này dùng CRLF, giữ nguyên khi sửa) và `scripts/coremark_dual_core_xsim.prj`; `run_tb_chi_xsim.ps1` thì tự lấy mọi `*.v` trong `rtl/`.
 - Đừng sửa RTL trong worktree đang chạy regression/stress: mỗi TB/seed compile lại từ mã nguồn hiện tại.
+- LINKACTIVE (từ 3.3): `tx_*_valid` của node là FLITV, tính cả flit LCrdReturn (opcode 0) gửi ở DEACTIVATE. Monitor nào đếm flit protocol phải lọc: trong node dùng `tx_*_valid && tx_link_run`, trong `chi_top` dùng `*_valid` (đã bỏ LCrdReturn) thay vì `*_flitv`. TB gọi thẳng một node phải lái `link_want` và trả `tx_linkactiveack` (xem `tb_chi_rn_f_qos_xbar4`), và chỉ cấp credit khi link đã ở RUN.
+- Khi tự chạy tb_CHI ngoài `run_regression.ps1` (ví dụ lượt ICG), hãy xét log bằng đúng mẫu lỗi của script (`TEST FAIL|FAIL:|\bFAIL\b|Fatal|FATAL|ERROR:|transaction timeout|timeout txn|WALL TIMEOUT|$stop`). Monitor B5 in `[B5 FATAL]` mà không dừng mô phỏng, nên chỉ đếm `TEST PASS` sẽ bỏ sót.
+- Kết quả kiểm RED của 3.3 (đột biến trên bản sao, `tb_chi_link_layer +CHK_SPEC_ALL`): hạ ACK không chờ credit → TB báo link ở STOP mà TX còn credit, checker báo `SPEC_LINK_ACTIVE` (link stopped with L-Credits not returned); không lọc LCrdReturn → scoreboard báo flit 0x0 sai thứ tự/lặp; không trả credit → link không bao giờ về STOP, TB timeout; cấp credit ngoài RUN → `SPEC_LINK_ACTIVE` (LCRDV in STOP). RTL đúng: 21/21 case, 0 lỗi.
+
+- SYSCO (từ 3.4): TB gọi thẳng `chi_rn_f` phải lái `sysco_connect` và trả `syscoack` (xem `tb_chi_rn_f_qos_xbar4`); sau reset RN mất vài chu kỳ bắt tay rồi mới nhận lệnh CPU. TB nào ép `rn_syscoreq` hay bỏ bit trong `SYSCO_CTRL` thì RN đó ngừng nhận lệnh cho tới khi vào lại. Module nào thêm nguồn snoop mới phải che theo `rn_in_domain` và góp vào `sysco_quiet`.
+- xsim 2024.1 phình bộ nhớ tới khoảng 5 GB rồi sập ("FATAL_ERROR: Vivado Simulator kernel has discovered an exceptional condition") khi một khối clocked gọi `.first()`/`.next()` của mảng kết hợp ở mỗi chu kỳ. Dùng `if (a.num() != 0) foreach (a[k])`. Lượt chạy ngắn không lộ ra, nên sau khi sửa checker hãy chạy một seed stress trước khi chạy cả regression.
+- Kết quả kiểm RED của 3.4 (đột biến trên bản sao, `tb_CHI +SYSCO_ONLY +CHK_SPEC_ALL`): HN không che và không quét SF → T57 báo SF còn liệt kê RN0 khi SYSCOACK hạ; cùng đột biến đó nhưng bỏ phép kiểm SF của TB → `SPEC_SYSCO` báo RN0 bị snoop ngoài domain (2 lần) và T57 báo 2 snoop tới RN0; RN hạ SYSCOREQ không flush → scoreboard báo `SB_SF_SUPERSET` (RN0 còn giữ dòng mà SF không liệt kê) và T57 fail; SYSCOACK hạ không chờ `sysco_quiet` → T57 báo SF còn 2 entry liệt kê RN0 lúc SYSCOACK hạ; RN ngoài domain vẫn nhận lệnh CPU → T57 fail; MN không che SnpDVMOp → `SPEC_SYSCO` và T57 báo 2 snoop tới RN0. RTL đúng: T57 PASS, 0 lỗi.
+- Kiểm phần còn lại của 3.3 (2026-10-07): Vivado 2024.1 mở `CHI_Interconnect.xpr` (chỉ đọc, batch) thấy 75 file, không thiếu file nào, có đủ ba file `chi_link_active_tx.v`, `chi_link_active_rx.v`, `chi_link_tx_crd.v`; `check_syntax` không chạy được ở chế độ chỉ đọc. Project CoreMark compile sạch các file đó.
 
 **Việc tiếp theo, theo thứ tự**
-1. **Giai đoạn 3** (link layer), theo kế hoạch chi tiết ở mục 3: bắt đầu bằng 3.0 (luật `SPEC_LINK_CREDIT`, RED) và 3.5 (TB đơn vị link). UCE ở RN để sau.
+1. Giai đoạn 3 đã xong. UCE ở RN để sau. Sau mỗi bước đưa lên GitHub: chạy `bash scripts/export_github.sh`, chạy regression trong repo phẳng (9 testbench), rồi commit và push.
 2. (Layout flit giờ theo B13.9: offset field lấy từ macro `CHI_*_LSB(NID)` trong `chi_defs.vh`, đừng hardcode; module mới dựng/tách flit phải gọi `CHI_FLIT_PARAM_CHECK`.)
 3. Lên lịch `run_stress_seeds.ps1` chạy định kỳ; bỏ barrier giả trong stress để tăng áp lực.
 4. CoreMark dual-core (task riêng); sau đó gắn `chi_l1_coherence_scoreboard.svh` vào TB CoreMark.

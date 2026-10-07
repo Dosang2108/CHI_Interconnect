@@ -44,6 +44,10 @@ module tb_chi_rn_f_qos_xbar4;
     wire                 tx_dat_valid;
     wire [DAT_W-1:0]     tx_dat_flit;
     reg                  tx_dat_lcrdv;
+    wire                 tx_linkactivereq;
+    reg                  tx_linkactiveack;
+    wire                 syscoreq;
+    reg                  syscoack;
 
     wire                 rx_rsp_ready;
     wire                 rx_rsp_lcrdv;
@@ -111,8 +115,26 @@ module tb_chi_rn_f_qos_xbar4;
         .rx_dat_ready(rx_dat_ready),
         .rx_dat_lcrdv(rx_dat_lcrdv),
         .perf_counts(perf_counts),
-        .cache_parity_error_event(cache_parity_error_event)
+        .cache_parity_error_event(cache_parity_error_event),
+        .link_want(1'b1),
+        .tx_linkactivereq(tx_linkactivereq),
+        .tx_linkactiveack(tx_linkactiveack),
+        .sysco_connect(1'b1),
+        .syscoreq(syscoreq),
+        .syscoack(syscoack)
     );
+
+    // Act as the link receiver: acknowledge the activation (B14.5.1), and
+    // as the interconnect of the coherency handshake (B15.2).
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            tx_linkactiveack <= 1'b0;
+            syscoack <= 1'b0;
+        end else begin
+            tx_linkactiveack <= tx_linkactivereq;
+            syscoack <= syscoreq;
+        end
+    end
 
     initial begin
         clk = 1'b0;
@@ -143,7 +165,14 @@ module tb_chi_rn_f_qos_xbar4;
 
         repeat (6) @(posedge clk);
         rstn = 1'b1;
-        repeat (2) @(posedge clk);
+        // Let the transmit link reach RUN; credits are only sent in RUN.
+        repeat (4) @(posedge clk);
+        // Act as the REQ receiver: grant one L-Credit (B14.2.1), so the RN-F
+        // may send exactly one REQ flit.
+        @(negedge clk);
+        tx_req_lcrdv = 1'b1;
+        @(negedge clk);
+        tx_req_lcrdv = 1'b0;
 
         $display("[%0t] TEST START T01_XBAR4_RNF_CPU_QOS_TO_REQ_FLIT", $time);
         @(negedge clk);
