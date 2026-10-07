@@ -16,6 +16,10 @@
 //
 //   +SEED=<n>   random seed (default 1)
 //   +OPS=<n>    operations per RN (default 300)
+//   +BARRIER=<n> every n operations all RNs meet and stay quiet for 80
+//               cycles (default 0: the streams never synchronize, and the
+//               scoreboard samples state only when they happen to be idle
+//               together)
 //   +CG         keep CTRL.cg_enable set (use with -Defines CHI_SIM_REAL_ICG)
 //   +NO_EXCL, +NO_EVICT, +NO_MKUNIQUE, +NO_WBFULL   drop that operation;
 //               its share of the mix becomes ReadShared. A CPU WriteBackFull
@@ -85,6 +89,7 @@ module tb_chi_random_stress;
 
     int unsigned seed;
     int          ops_per_rn;
+    int          barrier_every;
     bit          no_excl;
     bit          no_wbfull;
     bit          no_evict;
@@ -280,8 +285,8 @@ module tb_chi_random_stress;
         op_hist[op]++;
     endtask
 
-    // All RN streams meet here, then stay quiet long enough for the
-    // interconnect to drain, so the scoreboard samples an idle state.
+    // +BARRIER only. All RN streams meet here, then stay quiet long enough
+    // for the interconnect to drain, so the scoreboard samples an idle state.
     task automatic barrier;
         int gen;
         gen = barrier_gen;
@@ -329,7 +334,7 @@ module tb_chi_random_stress;
                 cpu_op(rn, `CHI_CPU_OP_RD_SHARED, line, 3'd6, 0, tag, rd);
             end
             ops_done[rn] = i + 1;
-            if ((i % 25) == 24)
+            if ((barrier_every > 0) && ((i % barrier_every) == barrier_every - 1))
                 barrier();
             // Mostly short gaps; now and then a long one so the interconnect
             // drains and the scoreboard samples an idle state.
@@ -372,6 +377,7 @@ module tb_chi_random_stress;
 
         if (!$value$plusargs("SEED=%d", seed)) seed = 1;
         if (!$value$plusargs("OPS=%d", ops_per_rn)) ops_per_rn = 300;
+        if (!$value$plusargs("BARRIER=%d", barrier_every)) barrier_every = 0;
         no_excl     = $test$plusargs("NO_EXCL");
         // Off by default: a CPU WriteBackFull is only legal from the line's
         // owner, and random stimulus cannot keep that true against snoops.
@@ -379,8 +385,8 @@ module tb_chi_random_stress;
         no_evict    = $test$plusargs("NO_EVICT");
         no_mkunique = $test$plusargs("NO_MKUNIQUE");
         r = $urandom(seed);  // seeds this thread; forked streams inherit it
-        $display("[%0t] STRESS START seed=%0d rns=%0d ops_per_rn=%0d cg=%0d excl=%0d",
-                 $time, seed, NUM_RN, ops_per_rn, $test$plusargs("CG"), !no_excl);
+        $display("[%0t] STRESS START seed=%0d rns=%0d ops_per_rn=%0d cg=%0d excl=%0d barrier=%0d",
+                 $time, seed, NUM_RN, ops_per_rn, $test$plusargs("CG"), !no_excl, barrier_every);
 
         wait_cycles(10);
         rstn = 1'b1;

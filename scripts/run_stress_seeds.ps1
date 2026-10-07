@@ -3,7 +3,11 @@ param(
     # Seeds to run for every configuration.
     [int[]]$Seeds = @(1, 2, 3, 4, 5, 6, 7, 8),
     # Configurations: rn2 (2 RNs), rn3 (3 RNs), icg (2 RNs, real clock gate).
-    [string[]]$Configs = @("rn2", "rn3", "icg"),
+    # These three stop all RNs every 25 operations (+BARRIER=25), which is
+    # what lets the scoreboard sample state about 20 times a run and gives
+    # the clock gate idle windows. rn2nb and rn3nb never synchronize the
+    # RNs: sustained load, but only a handful of state samples.
+    [string[]]$Configs = @("rn2", "rn3", "icg", "rn2nb", "rn3nb"),
     [int]$Ops = 0,
     [string]$Prefix = "stress",
     [string]$SpecPlusArgs = "CHK_SPEC_ALL",
@@ -27,10 +31,12 @@ $results = @()
 
 foreach ($cfg in $Configs) {
     switch ($cfg) {
-        "rn2" { $defines = ""; $extra = "" }
-        "rn3" { $defines = "STRESS_NUM_RN=3"; $extra = "" }
-        "icg" { $defines = "CHI_SIM_REAL_ICG"; $extra = "CG" }
-        default { throw "Unknown config '$cfg' (use rn2, rn3, icg)" }
+        "rn2"   { $defines = ""; $extra = "BARRIER=25" }
+        "rn3"   { $defines = "STRESS_NUM_RN=3"; $extra = "BARRIER=25" }
+        "icg"   { $defines = "CHI_SIM_REAL_ICG"; $extra = "CG BARRIER=25" }
+        "rn2nb" { $defines = ""; $extra = "" }
+        "rn3nb" { $defines = "STRESS_NUM_RN=3"; $extra = "" }
+        default { throw "Unknown config '$cfg' (use rn2, rn3, icg, rn2nb, rn3nb)" }
     }
     foreach ($seed in $Seeds) {
         $tag = "$Prefix/${cfg}_s$seed"

@@ -39,8 +39,8 @@ Testbench: `tb_CHI.sv` = `CHI_Interconnect.srcs/sim_1/new/tb_CHI.sv`.
 | STREX ở chế độ L1 ngoài | ⏸ để sau | Vẫn gửi WriteUnique (tham số `STREX_CLEAN_UNIQUE` chưa ai dùng), vì SoC chưa dùng LDREX/STREX qua đường này. |
 | SYSCO ở chế độ L1 ngoài | ⏸ để sau | RN không flush được L1 của core nên luôn ở trong coherency domain (`SYSCO_CTRL` bị bỏ qua). Cần cổng flush/"đã rỗng" từ L1. |
 | Giao dịch của RN ngoài domain | ⏸ để sau | RN ngoài domain không nhận lệnh CPU (`cpu_req_ready` thấp); chưa hỗ trợ giao dịch không cache (ReadOnce). |
-| 4.4 CoreMark trong regression | ❌ | TB CoreMark elaborate lại được (`796aea9`: tham chiếu `pos_used_unused` đã đổi tên từ 1.7). CoreMark dual-core vẫn timeout sau 3 triệu chu kỳ, giống hệt ở `515120f` (trước Giai đoạn 3), nên không do link layer; đang là task riêng. Sau đó gắn scoreboard L1 vào TB CoreMark. |
-| 4.3 phần còn lại | ❌ | Bỏ barrier giả trong stress; lên lịch chạy stress định kỳ. |
+| 4.4 CoreMark trong regression | ✅ (2026-10-07) | CoreMark dual-core PASS trở lại (CoreMark = 433,35, CRC đúng) và là bước cuối của `run_regression.ps1`. Nguyên nhân timeout: lần re-sync core `4329555` làm mất bản vá `id_ex_jal \| id_ex_jalr` ở thanh ghi EX/MEM, nên JALR ghi địa chỉ đích vào `rd` thay vì `pc+4` (chi tiết ở mục 5). Kết luận cũ "lỗi có sẵn" là sai: các lượt so sánh khi đó chạy với `SplitImages 0`. Còn lại: gắn scoreboard L1 vào TB CoreMark. |
+| 4.3 phần còn lại | 🟡 | ✅ Stress mặc định không còn barrier (`+BARRIER=<n>` để bật lại); `run_stress_seeds.ps1` chạy cả hai chế độ (40 lượt). ❌ Lên lịch chạy stress định kỳ. |
 | O1 băng thông fabric | ❌ | `chi_flit_reg_slice` vẫn half-buffer. |
 | O3 LLC-hit qua read tracker | ❌ | FSM chính vẫn bị giữ ở SEND_DAT/WAIT_ACK. |
 | Git | 🟡 | `fix/phase1-correctness` có đủ Giai đoạn 1–3 (`work/p30-link` đã gộp; 3.4 là `9b3605b`). Repo dev không có remote và `main` của nó vẫn là baseline `e9aa824`. Mã CHI lên GitHub qua `scripts/export_github.sh` (repo phẳng); Giai đoạn 3 được export ngày 2026-10-07. |
@@ -77,7 +77,7 @@ Testbench: `tb_CHI.sv` = `CHI_Interconnect.srcs/sim_1/new/tb_CHI.sv`.
 
 **Mục mở do Giai đoạn 4 phát hiện:** cả hai đã xử lý ngày 2026-09-26 (P0-2 có test RED T46; CPU WriteBackFull khi không sở hữu được giải quyết cùng P0-4 theo hướng A1). Xem mục kế tiếp.
 
-**CoreMark dual-core** (image mặc định, `-Iterations 1`): **vẫn mở**. Không kết thúc trong 3M và cả 6M chu kỳ; hai hart đọc timer mãi, không in UART. Hành vi **giống hệt baseline `e9aa824`** trong 3M chu kỳ đầu (so từng giá trị timer), nên đây là lỗi có sẵn phía firmware/RISC-V; lần PASS cuối là 07-09 09:36. Đã tách thành task riêng.
+**CoreMark dual-core** (image mặc định, `-Iterations 1`): **vẫn mở**. Không kết thúc trong 3M và cả 6M chu kỳ; hai hart đọc timer mãi, không in UART. Hành vi **giống hệt baseline `e9aa824`** trong 3M chu kỳ đầu (so từng giá trị timer), nên đây là lỗi có sẵn phía firmware/RISC-V; lần PASS cuối là 07-09 09:36. Đã tách thành task riêng. **Đính chính 2026-10-07:** các lượt này chạy với `SplitImages 0` (cấu hình sai, core1 lấy lệnh toàn 0). Với `-SplitImages 1 -StartMask 3`, CoreMark PASS ở baseline và tới tận `16c219b`; nó chỉ hỏng từ lần re-sync core `4329555` (mất đường link của JALR), đã sửa ngày 2026-10-07.
 
 **Lưu ý môi trường:** ở working tree chính, 9 file `rtl/core/*` (phần AMO của RISC-V), `tb_chi_coremark_dual_core.sv`, một dòng `tb_riscv_core_amo` trong `run_regression.ps1` và file mới `tb_riscv_core_amo.sv` đang được một phiên khác sửa dở, chưa commit, và chưa compile được. Việc gộp nhánh giữ nguyên các thay đổi này. Mọi kiểm chứng chạy trong worktree sạch `D:\Github\CHI_verify`.
 
@@ -226,7 +226,8 @@ Ký hiệu: ✅ đã sửa · 🟢 đã đúng từ trước (không cần sửa
   - Scoreboard coherence (4.1) trong 3 TB có cache RN nội bộ.
   - TB stress ngẫu nhiên 2/3 RN (4.3), có trong regression.
   - Test có chủ đích T40..T45; chế độ ICG thật.
-- **Chưa có:** CoreMark trong regression định kỳ (4.4); CoreMark đang fail vì lỗi có sẵn. Scoreboard L1 ngoài đã có nhưng hai SoC TB gần như không có fill L1 thật (chỉ dòng seed bằng backdoor, được miễn); cần gắn vào TB CoreMark dual-core (file đang được phiên khác sửa) để có độ phủ thật.
+- **CoreMark (4.4):** từ 2026-10-07 là bước cuối của `run_regression.ps1` (`-SkipCoreMark` để bỏ qua).
+- **Chưa có:** Scoreboard L1 ngoài đã có nhưng hai SoC TB gần như không có fill L1 thật (chỉ dòng seed bằng backdoor, được miễn); cần gắn vào TB CoreMark dual-core (file đang được phiên khác sửa) để có độ phủ thật.
 
 ### Tối ưu 1–3 (song song): ✅ 2 (trong 2.6a); ❌ 1 và 3
 
@@ -360,7 +361,7 @@ Kết quả với ba rủi ro trên: arbiter không bị đụng tới; không t
 |---|---|---|
 | 4.1 | ✅ Scoreboard coherence, kể cả bản cho L1 ngoài (`chi_l1_coherence_scoreboard.svh`). Còn lại: gắn vào TB có traffic L1 thật (CoreMark). | (M) |
 | 4.2 | ✅ Checker giao thức. Mỗi bước Giai đoạn 2 bật luật `+CHK_SPEC_*` của nó trong regression và phải giữ sạch. Các checker rời trong tb_CHI (TxnID ở SN, WLAST) vẫn giữ vì chúng kiểm ở phía AXI. | — |
-| 4.3 | ✅ TB stress ngẫu nhiên, WriteBackFull mặc định bật, `run_stress_seeds.ps1` cho nhiều seed. Còn lại: bỏ các barrier giả để tăng áp lực; lên lịch chạy định kỳ. | S |
+| 4.3 | ✅ TB stress ngẫu nhiên, WriteBackFull mặc định bật, `run_stress_seeds.ps1` cho nhiều seed. Barrier giờ là tùy chọn `+BARRIER=<n>` (mặc định tắt); `run_stress_seeds.ps1` chạy rn2/rn3/icg có barrier và rn2nb/rn3nb không barrier. Còn lại: lên lịch chạy định kỳ. | S |
 | 4.4 | Chạy SoC + CoreMark trong regression định kỳ, sau khi sửa lỗi CoreMark có sẵn. | S |
 
 ### Tối ưu song song (sau Giai đoạn 1)
@@ -401,8 +402,9 @@ Song song: sửa lỗi CoreMark dual-core có sẵn (task riêng), rồi gắn s
 
 **Cách chạy**
 - Một TB: `scripts/run_tb_chi_xsim.ps1 -Top <tb> -Tag <dir> [-PlusArgs "A B=1"] [-Defines "X Y=3"] [-SkipCompile]`. Log ở `reports/<Tag>/xsim.log`. Checker giao thức tự được bind vào mọi `chi_top`.
-- Toàn bộ: `scripts/run_regression.ps1 -Prefix <p>` (khoảng 20 phút, mặc định `CHK_SPEC_ALL`).
-- Stress nhiều seed: `scripts/run_stress_seeds.ps1 [-Seeds 1,2,3] [-Configs rn2,rn3,icg] [-Prefix p]` (mặc định 8 seed × 3 cấu hình, khoảng 6 phút với RTL sau 2.9).
+- Toàn bộ: `scripts/run_regression.ps1 -Prefix <p>` (khoảng 20 phút, mặc định `CHK_SPEC_ALL`). Bước cuối là CoreMark dual-core (`coremark_dual_core`, thêm khoảng 3 phút; `-SkipCoreMark` để bỏ; không chạy khi truyền `-Tops` hoặc ở repo phẳng). Trong worktree mới phải chép `CHI_Interconnect.sim/sim_1/behav/xsim/glbl.v` từ checkout chính.
+- CoreMark riêng: `scripts/run_coremark_dual_core_xsim.ps1 -SplitImages 1 -StartMask 3 -TimeoutCycles 3000000`. Mặc định `SplitImages 0` nạp sai image và sẽ timeout; đó là lỗi cấu hình, không phải lỗi RTL.
+- Stress nhiều seed: `scripts/run_stress_seeds.ps1 [-Seeds 1,2,3] [-Configs rn2,rn3,icg,rn2nb,rn3nb] [-Prefix p]` (mặc định 8 seed × 5 cấu hình = 40 lượt, khoảng 10 phút). rn2/rn3/icg dùng `+BARRIER=25`: mọi RN dừng lại mỗi 25 thao tác, nhờ đó scoreboard kiểm trạng thái 13–26 lần mỗi lượt và clock gate có khoảng nghỉ. rn2nb/rn3nb không barrier: tải liên tục, nhưng scoreboard chỉ kiểm trạng thái 2–6 lần.
 - Stress đơn: `-Top tb_chi_random_stress -PlusArgs "SEED=n OPS=n [CG] [NO_WBFULL] CHK_SPEC_ALL" [-Defines "STRESS_NUM_RN=3 CHI_SIM_REAL_ICG"]`.
 - Lần vết một dòng: thêm `TRACE_LINE=<hex addr>` vào PlusArgs.
 - Plusarg debug của tb_CHI: `P0_ONLY`, `T31_ONLY`, `WDOG_ONLY`, `SNTXN_ONLY`, `EVW_ONLY`, `BIST_ONLY`, `LLC_ONLY` (T46), `A1_ONLY` (T47..T51), `VIC_ONLY` (T51), `RAW_ONLY` (T52), `MW_ONLY` (T53, thêm `MW_TRACE` để in beat tới SN), `XR_ONLY` (T54), `DVM_ONLY` (T26, T55), `MU_ONLY` (T56), `SYSCO_ONLY` (T57), `CG_ALWAYS`, `TRACE_WDAT`.
@@ -431,5 +433,7 @@ Song song: sửa lỗi CoreMark dual-core có sẵn (task riêng), rồi gắn s
 **Việc tiếp theo, theo thứ tự**
 1. Giai đoạn 3 đã xong. UCE ở RN để sau. Sau mỗi bước đưa lên GitHub: chạy `bash scripts/export_github.sh`, chạy regression trong repo phẳng (9 testbench), rồi commit và push.
 2. (Layout flit giờ theo B13.9: offset field lấy từ macro `CHI_*_LSB(NID)` trong `chi_defs.vh`, đừng hardcode; module mới dựng/tách flit phải gọi `CHI_FLIT_PARAM_CHECK`.)
-3. Lên lịch `run_stress_seeds.ps1` chạy định kỳ; bỏ barrier giả trong stress để tăng áp lực.
-4. CoreMark dual-core (task riêng); sau đó gắn `chi_l1_coherence_scoreboard.svh` vào TB CoreMark.
+3. Lên lịch `run_stress_seeds.ps1` chạy định kỳ (barrier đã thành tùy chọn, xong 2026-10-07).
+4. Gắn `chi_l1_coherence_scoreboard.svh` vào TB CoreMark (CoreMark đã PASS và đã vào regression).
+5. Core RISC-V: mỗi lần re-sync từ repo MCU phải giữ bản vá thứ 7 `.id_ex_jal(id_ex_jal | id_ex_jalr)` ở instance `EX_MEM` của `riscv_pipeline.v`. Core MCU gốc cũng thiếu đường này (mọi `jalr` có `rd ≠ x0` ghi sai `rd`); nên sửa ở repo MCU.
+6. Hiệu năng: CoreMark = 433,35 ở đầu nhánh so với 595,50 ở `16c219b` (core cũ, chưa có link layer). Chưa tách phần do core mới (thêm một nhịp mỗi lần đổi hướng) và phần do link layer.

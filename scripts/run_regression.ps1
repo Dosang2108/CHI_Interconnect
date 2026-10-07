@@ -24,13 +24,15 @@ param(
     # Phase-2 spec rules of the protocol checker (chi_checker_binds binds it
     # into every chi_top). Each phase-2 step adds its rules here once the RTL
     # is clean against them; pass -SpecPlusArgs "" to run without them.
-    [string]$SpecPlusArgs = "CHK_SPEC_ALL"
+    [string]$SpecPlusArgs = "CHK_SPEC_ALL",
+    # Leave out the CoreMark dual-core run at the end (about 3 minutes).
+    [switch]$SkipCoreMark
 )
 
 # Run every self-checking testbench and print one verdict per testbench.
 # A testbench FAILS when its log has any failure marker, or when a node
 # reports a transaction timeout: timeouts must not be hidden behind a PASS.
-# CoreMark runs separately (scripts/run_coremark_dual_core_xsim.ps1).
+# CoreMark dual-core runs last, through scripts/run_coremark_dual_core_xsim.ps1.
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -86,7 +88,39 @@ foreach ($top in $Tops) {
     Write-Host ("[{0,-10}] {1} {2}" -f $verdict, $top, $detail)
 }
 
-$failed = @($results | Where-Object { $_.Verdict -ne "PASS" })
+# CoreMark dual-core (roadmap 4.4): the only test that runs real firmware on
+# both harts through the L1 caches and the interconnect. It has its own
+# runner and project file, and is left out of the flat export (no core) and
+# of a run with an explicit -Tops list. In a fresh git worktree it needs
+# CHI_Interconnect.sim/sim_1/behav/xsim/glbl.v copied from the main checkout.
+$cmRunner = Join-Path $PSScriptRoot "run_coremark_dual_core_xsim.ps1"
+if (-not $SkipCoreMark -and -not $PSBoundParameters.ContainsKey("Tops") -and
+    (Test-Path -LiteralPath $cmRunner) -and
+    -not (Test-Path -LiteralPath (Join-Path $repoRoot "chi_top.v"))) {
+    $cmLog = Join-Path $repoRoot "reports/coremark/xsim_coremark_dual_core.log"
+    if (Test-Path -LiteralPath $cmLog) { Remove-Item -LiteralPath $cmLog -Force }
+    $verdict = "PASS"
+    $detail = ""
+    try {
+        & $cmRunner -VivadoBin $VivadoBin -SplitImages 1 -StartMask 3 -TimeoutCycles 3000000 *>&1 | Out-Null
+    } catch {
+        $detail = $_.Exception.Message
+    }
+    if (-not (Test-Path -LiteralPath $cmLog)) {
+        $verdict = "BUILD_FAIL"
+    } elseif (-not (Select-String -Path $cmLog -Pattern "[COREMARK] PASS" -SimpleMatch)) {
+        $verdict = "FAIL"
+        $bad = Select-String -Path $cmLog -Pattern "[COREMARK] FAIL" -SimpleMatch | Select-Object -First 1
+        if ($bad) { $detail = $bad.Line.Trim() }
+    } else {
+        $score = Select-String -Path $cmLog -Pattern "[COREMARK] CoreMark=" -SimpleMatch | Select-Object -First 1
+        $detail = if ($score) { $score.Line.Trim() } else { "" }
+    }
+    $results += [pscustomobject]@{ Testbench = "coremark_dual_core"; Verdict = $verdict; Detail = $detail }
+    Write-Host ("[{0,-10}] {1} {2}" -f $verdict, "coremark_dual_core", $detail)
+}
+
+$failed =@($results | Where-Object { $_.Verdict -ne "PASS" })
 Write-Host ""
 Write-Host ("REGRESSION SUMMARY: {0}/{1} passed" -f ($results.Count - $failed.Count), $results.Count)
 if ($failed.Count -gt 0) { exit 1 }
