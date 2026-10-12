@@ -1,8 +1,9 @@
 `include "chi_defs.vh"
 // -----------------------------------------------------------------------------
 // Module: chi_output_reg
-// Purpose: Per-output fabric elastic stage. Depth 1 uses a half-buffer register
-//          slice; depth >1 uses a fabric-safe FIFO for burst absorption.
+// Purpose: Per-output fabric elastic stage. Depth 1 uses a two-entry register
+//          slice (one flit per cycle, ready registered); depth >1 uses a
+//          fabric-safe FIFO for burst absorption.
 // -----------------------------------------------------------------------------
 module chi_output_reg #(
     parameter FLIT_W = 128,

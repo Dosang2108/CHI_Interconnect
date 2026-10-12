@@ -1,4 +1,4 @@
-# CHI Interconnect: trạng thái lộ trình sửa lỗi và kế hoạch tiếp theo (2026-09-24, cập nhật 2026-10-07: xong Giai đoạn 2 trừ UCE; xong Giai đoạn 3)
+# CHI Interconnect: trạng thái lộ trình sửa lỗi và kế hoạch tiếp theo (2026-09-24, cập nhật 2026-10-08: xong Giai đoạn 2 trừ UCE; xong Giai đoạn 3; CoreMark L1 ngoài deadlock)
 
 Tài liệu này đối chiếu lộ trình 4 giai đoạn trong bản review AMBA 5 CHI (IHI0050H) với RTL hiện tại ở `D:\Github\CHI_Interconnect`. Nó ghi lại mục nào đã sửa và mục nào còn tồn đọng, rồi lập kế hoạch cho phần còn lại.
 
@@ -39,9 +39,10 @@ Testbench: `tb_CHI.sv` = `CHI_Interconnect.srcs/sim_1/new/tb_CHI.sv`.
 | STREX ở chế độ L1 ngoài | ⏸ để sau | Vẫn gửi WriteUnique (tham số `STREX_CLEAN_UNIQUE` chưa ai dùng), vì SoC chưa dùng LDREX/STREX qua đường này. |
 | SYSCO ở chế độ L1 ngoài | ⏸ để sau | RN không flush được L1 của core nên luôn ở trong coherency domain (`SYSCO_CTRL` bị bỏ qua). Cần cổng flush/"đã rỗng" từ L1. |
 | Giao dịch của RN ngoài domain | ⏸ để sau | RN ngoài domain không nhận lệnh CPU (`cpu_req_ready` thấp); chưa hỗ trợ giao dịch không cache (ReadOnce). |
-| 4.4 CoreMark trong regression | ✅ (2026-10-07) | CoreMark dual-core PASS trở lại (CoreMark = 433,35, CRC đúng) và là bước cuối của `run_regression.ps1`. Nguyên nhân timeout: lần re-sync core `4329555` làm mất bản vá `id_ex_jal \| id_ex_jalr` ở thanh ghi EX/MEM, nên JALR ghi địa chỉ đích vào `rd` thay vì `pc+4` (chi tiết ở mục 5). Kết luận cũ "lỗi có sẵn" là sai: các lượt so sánh khi đó chạy với `SplitImages 0`. Còn lại: gắn scoreboard L1 vào TB CoreMark. |
-| 4.3 phần còn lại | 🟡 | ✅ Stress mặc định không còn barrier (`+BARRIER=<n>` để bật lại); `run_stress_seeds.ps1` chạy cả hai chế độ (40 lượt). ❌ Lên lịch chạy stress định kỳ. |
-| O1 băng thông fabric | ❌ | `chi_flit_reg_slice` vẫn half-buffer. |
+| 4.4 CoreMark trong regression | ✅ (2026-10-07) | CoreMark dual-core PASS trở lại (CoreMark = 433,35, CRC đúng) và là bước cuối của `run_regression.ps1`. Nguyên nhân timeout: lần re-sync core `4329555` làm mất bản vá `id_ex_jal \| id_ex_jalr` ở thanh ghi EX/MEM, nên JALR ghi địa chỉ đích vào `rd` thay vì `pc+4` (chi tiết ở mục 5). Kết luận cũ "lỗi có sẵn" là sai: các lượt so sánh khi đó chạy với `SplitImages 0`. Scoreboard L1 đã gắn vào TB CoreMark (2026-10-08). |
+| CoreMark ở chế độ L1 ngoài | ✅ (2026-10-09) | Deadlock đã sửa: D-L1 nhận snoop cả khi đang chờ bus (`dcache.v`), cùng hai lỗi đi kèm ở bridge và tile. CoreMark L1 ngoài PASS (431,39), scoreboard L1 và checker 0 lỗi, và là bước thứ 19 của `run_regression.ps1`. Chi tiết ở mục cập nhật 2026-10-09. |
+| 4.3 phần còn lại | ✅ | Stress mặc định không còn barrier (`+BARRIER=<n>` để bật lại); `run_stress_seeds.ps1` chạy cả hai chế độ (40 lượt). Không lên lịch chạy định kỳ (quyết định 2026-10-09): vẫn chạy tay 40 lượt trước mỗi commit RTL. |
+| O1 băng thông fabric | ✅ (2026-10-08) | `chi_flit_reg_slice` là slice hai entry: 1 flit/chu kỳ ở mỗi output của fabric thay vì 1 flit/2 chu kỳ. Số liệu ở mục cập nhật 2026-10-08. |
 | O3 LLC-hit qua read tracker | ❌ | FSM chính vẫn bị giữ ở SEND_DAT/WAIT_ACK. |
 | Git | 🟡 | `fix/phase1-correctness` có đủ Giai đoạn 1–3 (`work/p30-link` đã gộp; 3.4 là `9b3605b`). Repo dev không có remote và `main` của nó vẫn là baseline `e9aa824`. Mã CHI lên GitHub qua `scripts/export_github.sh` (repo phẳng); Giai đoạn 3 được export ngày 2026-10-07. |
 
@@ -170,6 +171,96 @@ Testbench: `tb_CHI.sv` = `CHI_Interconnect.srcs/sim_1/new/tb_CHI.sv`.
 
 **Kết quả sau 3.2**: regression 16/16; stress 24/24; tb_CHI T01..T56 ở chế độ mặc định và `CHI_SIM_REAL_ICG +CG_ALWAYS` (clock bị tắt 13 589 chu kỳ); 0 lỗi `SPEC_LINK_CREDIT` và `SPEC_LINK_FLITPEND` trên cả 8 nhóm link (719 REQ, 1060 RSP, 2767 DAT, 151 SNP flit mỗi chiều).
 
+## Cập nhật tiến độ 2026-10-08: scoreboard L1 trong TB CoreMark, tách nguyên nhân giảm điểm CoreMark
+
+**Scoreboard L1 trong TB CoreMark (4.1).** `tb_chi_coremark_dual_core` có tham số `EXTERNAL_L1` (xelab `--generic_top`), nối vào `USE_EXTERNAL_L1_SNOOP`:
+
+- `EXTERNAL_L1 = 0` (mặc định, cấu hình vẫn dùng để đo điểm): mỗi RN-F có cache riêng đứng sau D-L1 và D-L1 không bị snoop. Scoreboard L1 tắt ở chế độ này, vì cache của RN-F có thể evict một dòng (và dòng đó rời snoop filter) trong khi D-L1 vẫn giữ nó, nên `SB_L1_SF_SUPERSET` không còn là bất biến.
+- `EXTERNAL_L1 = 1` (mặc định của `chi_soc_cluster_ip`): D-L1 là cache của RN và nhận snoop CHI. Scoreboard `chi_l1_coherence_scoreboard.svh` kiểm D-L1 ở mọi điểm lặng.
+
+Cả hai chế độ giờ mang checker giao thức (`chi_checker_binds` là top thứ hai, `+CHK_SPEC_ALL`). TB in `[COREMARK] FAIL` nếu firmware chạy xong mà scoreboard hoặc checker có lỗi, và `run_regression.ps1` coi mọi dòng `CHI_CHK ERROR` / `CHI_SBL1 ERROR` trong log CoreMark là fail.
+
+Scoreboard có thêm macro tùy chọn `` `SBL1_PHYS(core, addr) ``: TB CoreMark remap địa chỉ D-side theo từng core (`DATA_REMAP_*`), nên cùng một địa chỉ D-L1 ở hai core là hai dòng khác nhau với home. Trước khi có macro này, lượt chạy L1 ngoài báo 2112 lỗi giả (1056 `SB_L1_SWMR` + 1056 `SB_L1_SF_SUPERSET`), tức scoreboard thật sự nhìn các dòng do firmware fill.
+
+Kết quả:
+
+| Cấu hình | Kết quả |
+|---|---|
+| `EXTERNAL_L1 = 0` | PASS, CoreMark = 433,354423 (không đổi), checker 0 lỗi trên 697 request và 141 snoop |
+| `EXTERNAL_L1 = 1` | **FAIL: deadlock** ở khoảng chu kỳ 6000. Trước đó scoreboard kiểm 32 lần, 1056 dòng, 0 lỗi |
+
+**Lỗi mới: deadlock ở chế độ L1 ngoài** (chưa sửa). Checker báo `LIVENESS_TXN` cho ReadShared `0x20080` của RN1 và ReadUnique `0x41ff80` của RN0, `LIVENESS_SNP` cho SnpSharedFwd `0x20080` tới RN0; cả hai hart đứng yên tới hết timeout. Chuỗi nguyên nhân:
+
+1. Hart 1 fetch dòng lệnh `0x20080` mà hart 0 đã fetch trước. I-fetch đi ra bằng ReadShared, nên snoop filter ghi RN0 là sharer và home gửi SnpSharedFwd tới RN0.
+2. D-L1 của hart 0 đang ở `R_WAIT`, chờ dữ liệu cho ReadUnique `0x41ff80` của chính nó. `dcache.v` chỉ nhận snoop khi `state == IDLE` (`snoop_ready`), nên snoop không được trả lời.
+3. Home không khởi động request nào cần snoop filter khi còn snoop tracker đang mở (`start_sf_stage` cần `filter_trackers_idle` trong `chi_hn_f.v`), nên ReadUnique của RN0 nằm lại trong POS.
+
+Hai SoC TB chạy được ở chế độ này chỉ vì gần như không có traffic L1 thật. Chế độ 0 không bị vì cache của RN-F luôn trả lời snoop. Vì lỗi này, CoreMark L1 ngoài không nằm trong regression mặc định (`run_regression.ps1 -CoreMarkExternalL1` để bật).
+
+Sửa không gọn trong một chỗ. Cho D-L1 nhận snoop ở trạng thái chờ thì phải làm cùng lúc ba việc, nếu không sẽ đổi deadlock thành sai dữ liệu:
+
+- Snoop trúng đúng dòng đang chờ fill: chỉ được trả "không có" khi RN chưa nhận CompData; nếu CompData đã về RN (đang được bridge đẩy xuống D-L1) thì snoop phải chờ tới khi dòng được ghi vào cache.
+- Store trúng dòng sạch hiện ghi RAM và đặt dirty ngay ở chu kỳ `IDLE`, trước khi MakeUnique xong. Nếu snoop được phép chen vào giữa, dữ liệu chưa có quyền sở hữu sẽ đi theo snoop response. Phải hoãn việc ghi tới khi có Comp, và chạy lại store như một miss nếu dòng đã bị snoop lấy mất.
+- Dòng victim đã WriteBack xong vẫn còn valid + dirty trong mảng trạng thái cho tới khi fill ghi đè; nó phải bị xóa trước khi snoop có thể nhìn thấy.
+
+Cách giảm nhẹ rẻ hơn cho riêng tình huống CoreMark: cho I-fetch dùng ReadOnce, vì I-cache không snoop được thì không nên là sharer trong snoop filter. Cách này không sửa deadlock với dữ liệu dùng chung thật.
+
+**Tách nguyên nhân CoreMark giảm từ 595,50 xuống 433,35.** Chạy CoreMark dual-core (`-SplitImages 1 -StartMask 3`) ở ba điểm:
+
+| Commit | Core | Link layer | `score_cycles` | CoreMark |
+|---|---|---|---|---|
+| `16c219b` | cũ | chưa có | 335 850 | 595,50 |
+| `4329555` + bản vá JALR | mới | chưa có | 461 402 | 433,46 |
+| `c8ef567` (đầu nhánh) | mới | có | 461 516 | 433,35 |
+
+Core mới chiếm 125 552 trong 125 666 chu kỳ tăng thêm (99,9%); link layer chỉ thêm 114 chu kỳ (0,03%). Trong phần của core, bộ đếm của TB ở hart 0 cho thấy: stall nhân/chia 84 564 chu kỳ (core cũ: 0), stall load-use 20 508 chu kỳ (core cũ: 0), số lần flush do rẽ nhánh 6376 so với 4021. Stall I-cache và D-cache gần như không đổi (5480 và 3893 so với 5484 và 3894). Khoảng 20 000 chu kỳ còn lại chưa được đếm riêng; nhiều khả năng là chi phí đổi hướng (thêm một nhịp mỗi lần redirect, bản vá thứ 4 của CHI), nhưng chưa đo.
+
+**O1: băng thông output của fabric.** `chi_flit_reg_slice` (output register của fabric khi `OUTPUT_FIFO_DEPTH <= 1`, tức profile IoT) trước đây là half-buffer một entry: `in_ready = !valid_q`, nên mỗi output chỉ chuyển được 1 flit mỗi 2 chu kỳ. Giờ nó có hai entry: thanh ghi output và một thanh ghi skid nhận flit tới trong lúc output bị giữ. `in_ready = !skid_valid_q` vẫn không phụ thuộc `out_ready` trong cùng chu kỳ. Cổng module không đổi; mỗi output tốn thêm một thanh ghi rộng bằng flit.
+
+TB đơn vị mới `tb_chi_flit_reg_slice` (trong regression và trong danh sách export): thứ tự và nội dung flit, `out_valid`/`out_data` giữ nguyên khi đích stall, 1 flit/chu kỳ khi hai phía sẵn sàng, nhận đúng 2 flit khi đích stall, `in_ready` không đổi theo `out_ready` trong cùng chu kỳ, `clear` làm rỗng. **RED** trên half-buffer cũ: 100 flit trong 200 chu kỳ và chỉ nhận 1 flit khi stall; các phép kiểm còn lại pass. Trên slice mới: 200 flit trong 200 chu kỳ, 3764 flit, 0 lỗi.
+
+Ảnh hưởng tới cả hệ (thời điểm `$finish`, trước → sau):
+
+| Testbench | Trước | Sau | Thay đổi |
+|---|---|---|---|
+| tb_CHI | 455 245 ns | 448 725 ns | −1,4% |
+| tb_chi_random_stress (seed 1) | 301 785 ns | 296 465 ns | −1,8% |
+| tb_chi_soc_cluster_ip_deep | 6015 ns | 5845 ns | −2,8% |
+| CoreMark dual-core | 433,354 (ic_stall 5577, dc_stall 3909) | 433,554 (ic_stall 5399, dc_stall 3877) | +0,05% điểm, stall I-cache −3,2% |
+
+Mức tăng ở cả hệ nhỏ hơn nhiều so với 2× ở từng output, vì traffic hiện tại bị giới hạn bởi độ trễ của từng giao dịch chứ không phải băng thông, và chiều node → fabric của profile IoT vẫn dừng ở 0,67 flit/chu kỳ (`FABRIC_FIFO_DEPTH` = 2, round trip credit 3 chu kỳ).
+
+Kết quả kiểm O1: regression 18/18 (CoreMark = 433,554), stress 40/40, tb_CHI T01..T57 ở chế độ `CHI_SIM_REAL_ICG +CG_ALWAYS` (2026-10-09; `cg_gated_cycles` = 12417, 0 lỗi checker và scoreboard).
+
+## Cập nhật tiến độ 2026-10-09: sửa deadlock ở chế độ L1 ngoài
+
+Chế độ L1 ngoài (`USE_EXTERNAL_L1_SNOOP = 1`) giờ chạy hết CoreMark dual-core. Có ba lỗi trên cùng đường snoop; lỗi thứ nhất là deadlock đã biết, hai lỗi sau chỉ lộ ra khi mô phỏng chạy được qua chu kỳ 6000.
+
+**1. D-L1 không nhận snoop khi đang chờ bus (`dcache.v`).** `snoop_ready` trước đây chỉ bật ở `IDLE`. Giờ D-L1 nhận snoop cả ở `AR_REQ`, `R_WAIT`, `AW_REQ`, `W_REQ`, `B_WAIT` và ba trạng thái `EVICT_*`, và tra snoop ngay trong lúc request của CPU đang chờ (một chu kỳ, RAM chuyển sang địa chỉ snoop). Chu kỳ tra không bao giờ rơi vào `IDLE` hay `DONE`, là hai trạng thái cần RAM cho request của CPU. Ba luật đi kèm, đúng như đã nêu ở mục 2026-10-08:
+
+- **Dòng đang fill.** Trước beat R đầu tiên, snoop được trả lời theo nội dung cache, tức là "không có" với dòng đang chờ. Từ beat R đầu tiên tới khi dòng được ghi vào RAM, D-L1 không nhận snoop (`fill_seen_q`), vì khi đó dòng đã thuộc về nó. Khoảng chờ này dài tối đa một lần fill (khoảng 19 chu kỳ) và không phụ thuộc vào home.
+- **Store trúng dòng sạch.** Store không còn ghi RAM và đặt dirty ở chu kỳ `IDLE`. D-L1 phát MakeUnique trước (`req_upgrade_q`), và chỉ ghi ở `DONE`, sau khi có B. Nếu trong lúc đó một snoop invalidate đã lấy mất dòng, store chạy lại như một miss (ReadUnique, kèm WriteBack victim nếu cần). Dữ liệu mới nhất không mất, vì home ghi dữ liệu dirty do snoop trả về vào LLC và MakeUnique không xóa LLC.
+- **Victim đã WriteBack.** Khi B của WriteBackFull về, way của victim bị xóa valid và dirty ngay, không chờ fill ghi đè. Trong lúc WriteBack còn trên đường, victim vẫn trả lời snoop bằng dữ liệu của nó; nếu snoop đó lấy mất dòng thì home bỏ dữ liệu của WriteBack (`copyback_stale`, có sẵn).
+
+Các thanh ghi `snoop_pending_*` của `dcache.v` bị bỏ: chúng không bao giờ được đặt.
+
+**2. Fill của D-cache nằm lại trong bridge (`riscv_l1_axi_to_chi_bridge.v`).** Khi một I-fetch đang chờ, bridge gửi lệnh đọc của D-cache qua slot phụ, và giữ dòng trả về cho tới khi I-fetch xong. Trong lúc đó RN đã gửi CompAck, home có thể snoop dòng này, còn D-L1 chưa thấy beat nào nên sẽ trả lời "không có". Tham số mới `DC_READ_AUX` (mặc định 1, hành vi cũ) tắt đường phụ cho lệnh đọc của D-cache; tile đặt nó bằng 0 khi `USE_EXTERNAL_L1_SNOOP = 1` (tham số mới của `riscv_core_l1_chi_tile`, wrapper truyền xuống). Khi đó dòng bắt đầu tới D-L1 đúng một chu kỳ sau khi RN nhận xong CompData. Chế độ 0 không đổi (CoreMark vẫn 433,553579).
+
+**3. Địa chỉ snoop không được đổi ngược qua `DATA_REMAP` (`riscv_core_l1_chi_tile.v`).** Tile cộng `DATA_REMAP_OFFSET` vào địa chỉ AR/AW của D-cache, nhưng đưa thẳng địa chỉ snoop (địa chỉ interconnect) vào D-cache. Với offset khác 0 (TB CoreMark), mọi snoop đều tra sai dòng: snoop back-invalidate của dòng `0x400f80` trượt trong khi D-L1 giữ nó dưới địa chỉ `0xf80`, và một snoop của dòng lệnh có thể trúng nhầm một dòng dữ liệu. Lượt chạy đầu tiên sau khi hết deadlock báo 2577 lỗi `SB_L1_SF_SUPERSET` vì lỗi này. Giờ tile trừ offset trước khi tra; địa chỉ snoop mà không địa chỉ D-cache nào ánh xạ tới được trả lời "không có" ngay ở tile. Với offset bằng 0 (hai SoC TB, cấu hình mặc định) không có gì thay đổi.
+
+**Test.**
+- `tb_riscv_dcache_writeback_chi` thêm T03–T08: snoop được nhận khi đang chờ fill (dòng khác trúng, dòng đang chờ trượt); snoop chờ khi fill đang về rồi trúng; store trúng dòng sạch chỉ ghi sau MakeUnique (snoop ở giữa thấy dòng cũ, sạch); mất dòng giữa chừng thì store chạy lại bằng ReadUnique; victim trả lời snoop khi WriteBack còn trên đường và biến mất khi WriteBack xong. **RED** trên RTL cũ: T03 fail ("snoop was not taken").
+- `tb_riscv_l1_axi_to_chi_bridge_mmio` thêm T10 trên một bridge thứ hai có `DC_READ_AUX = 0`: lệnh đọc của D-cache không đi đường phụ, và dòng bắt đầu trả về ngay chu kỳ sau response. **RED** khi đổi tham số của bridge đó thành 1.
+- CoreMark dual-core `-ExternalL1 1`: trước khi sửa timeout ở chu kỳ 6000 (`LIVENESS_TXN`, `LIVENESS_SNP`); sau lỗi 1 và 2 chạy hết nhưng scoreboard báo 2577 lỗi; sau lỗi 3 **PASS**, CoreMark = 431,387774, scoreboard L1 300 lần kiểm trên 28 147 dòng, 0 lỗi, checker 0 lỗi trên 857 request và 178 snoop.
+
+`run_regression.ps1` giờ chạy cả hai cấu hình CoreMark (bỏ switch `-CoreMarkExternalL1`): 19 bước.
+
+**Giới hạn còn lại của chế độ L1 ngoài.**
+- I-cache không snoop được nhưng I-fetch vẫn là ReadShared, nên snoop filter coi RN là sharer của dòng lệnh. D-L1 trả lời "không có" thay cho I-cache; một core ghi vào dòng lệnh mà core kia đã fetch sẽ không làm I-cache kia mất bản cũ (chỉ ảnh hưởng mã tự sửa). Cho I-fetch dùng ReadOnce không sửa được việc này: nó chỉ làm RN thôi bị ghi là sharer của dòng lệnh (bớt snoop vô ích, bớt chiếm snoop filter). Muốn I-cache không giữ bản cũ thì phải cho nó một cổng snoop để invalidate.
+- Luật "dòng đang fill" dựa vào thứ tự của giao thức chứ không vào một tín hiệu riêng: home chỉ snoop một dòng sau khi nhận CompAck của lần fill, CompAck rời RN không sớm hơn chu kỳ mà beat R đầu tiên tới D-L1 (`compack_valid_q` và trạng thái `ST_RVALID` của bridge cùng được đặt ở chu kỳ sau CompData), và vòng CompAck → home → snoop còn mất thêm nhiều chu kỳ qua fabric. Với MakeUnique thì không cần giả định này: snoop tới trước hay sau khi ghi đều cho kết quả đúng.
+- Nếu `DATA_REMAP` được cấu hình sao cho một địa chỉ interconnect vừa là ảnh của một địa chỉ được remap, vừa là một địa chỉ không remap mà CPU truy cập trực tiếp, snoop chỉ tra địa chỉ thứ nhất.
+- STREX và SYSCO ở chế độ L1 ngoài vẫn chưa làm.
+
 ## 1. Bảng trạng thái tổng hợp
 
 Ký hiệu: ✅ đã sửa · 🟢 đã đúng từ trước (không cần sửa) · 🟡 mới giảm thiểu hoặc sửa một phần · ❌ chưa sửa
@@ -227,13 +318,13 @@ Ký hiệu: ✅ đã sửa · 🟢 đã đúng từ trước (không cần sửa
   - TB stress ngẫu nhiên 2/3 RN (4.3), có trong regression.
   - Test có chủ đích T40..T45; chế độ ICG thật.
 - **CoreMark (4.4):** từ 2026-10-07 là bước cuối của `run_regression.ps1` (`-SkipCoreMark` để bỏ qua).
-- **Chưa có:** Scoreboard L1 ngoài đã có nhưng hai SoC TB gần như không có fill L1 thật (chỉ dòng seed bằng backdoor, được miễn); cần gắn vào TB CoreMark dual-core (file đang được phiên khác sửa) để có độ phủ thật.
+- **Scoreboard L1 ngoài trên traffic thật:** đã gắn vào TB CoreMark dual-core (2026-10-08, `-ExternalL1 1`). Nó sạch trên 1056 dòng do firmware fill, cho tới khi cấu hình L1 ngoài deadlock (lỗi RTL, chưa sửa). Hai SoC TB vẫn gần như không có fill L1 thật (chỉ dòng seed bằng backdoor, được miễn).
 
-### Tối ưu 1–3 (song song): ✅ 2 (trong 2.6a); ❌ 1 và 3
+### Tối ưu 1–3 (song song): ✅ 1 (2026-10-08) và 2 (trong 2.6a); ❌ 3
 
 | # | Trạng thái |
 |---|---|
-| 1. Băng thông fabric | ❌ `chi_flit_reg_slice` vẫn là half-buffer (`in_ready = !valid_q`, [chi_flit_reg_slice.v:25](../common/chi_flit_reg_slice.v#L25)). Profile IoT mặc định dùng `OUTPUT_FIFO_DEPTH=1` ([chi_defs.vh:55](../common/chi_defs.vh#L55)), nên mỗi cổng chỉ đạt 1 flit / 2 chu kỳ. |
+| 1. Băng thông fabric | ✅ `chi_flit_reg_slice` là slice hai entry (thanh ghi output + thanh ghi skid, `in_ready = !skid_valid_q`): `in_ready` vẫn chỉ phụ thuộc trạng thái cục bộ nên không tạo vòng ready qua fabric, và luồng đều đạt 1 flit/chu kỳ. Profile IoT (`OUTPUT_FIFO_DEPTH=1`) dùng slice này ở mọi output của fabric. |
 | 2. DATA_W 32→128 | ✅ 2.6a (`580451c`): kênh DAT của CHI 128 bit (4 beat/dòng); CPU và AXI vẫn 32 bit. |
 | 3. HN tuần tự hóa khi LLC hit | ❌ FSM chính vẫn giữ `HN_ST_SEND_DAT`/`HN_ST_WAIT_ACK` ([chi_hn_f.v:188-189](../hn/chi_hn_f.v#L188)). |
 
@@ -359,7 +450,7 @@ Kết quả với ba rủi ro trên: arbiter không bị đụng tới; không t
 
 | # | Việc | KT |
 |---|---|---|
-| 4.1 | ✅ Scoreboard coherence, kể cả bản cho L1 ngoài (`chi_l1_coherence_scoreboard.svh`). Còn lại: gắn vào TB có traffic L1 thật (CoreMark). | (M) |
+| 4.1 | ✅ Scoreboard coherence, kể cả bản cho L1 ngoài (`chi_l1_coherence_scoreboard.svh`), đã gắn vào TB CoreMark (`EXTERNAL_L1 = 1`). | (M) |
 | 4.2 | ✅ Checker giao thức. Mỗi bước Giai đoạn 2 bật luật `+CHK_SPEC_*` của nó trong regression và phải giữ sạch. Các checker rời trong tb_CHI (TxnID ở SN, WLAST) vẫn giữ vì chúng kiểm ở phía AXI. | — |
 | 4.3 | ✅ TB stress ngẫu nhiên, WriteBackFull mặc định bật, `run_stress_seeds.ps1` cho nhiều seed. Barrier giờ là tùy chọn `+BARRIER=<n>` (mặc định tắt); `run_stress_seeds.ps1` chạy rn2/rn3/icg có barrier và rn2nb/rn3nb không barrier. Còn lại: lên lịch chạy định kỳ. | S |
 | 4.4 | Chạy SoC + CoreMark trong regression định kỳ, sau khi sửa lỗi CoreMark có sẵn. | S |
@@ -368,7 +459,7 @@ Kết quả với ba rủi ro trên: arbiter không bị đụng tới; không t
 
 | # | Việc | KT |
 |---|---|---|
-| O1 | Thay `chi_flit_reg_slice` half-buffer bằng skid buffer 2 entry (đã có `chi_skid_buffer.v`) khi `OUTPUT_FIFO_DEPTH<=1`. Ước tính băng thông mỗi cổng tăng khoảng 2×. | S |
+| O1 | ✅ (2026-10-08) `chi_flit_reg_slice` thành slice hai entry có `in_ready` đăng ký. Không dùng `chi_skid_buffer.v` vì module đó có đường tổ hợp từ `out_ready` tới `in_ready`. Băng thông mỗi output tăng 2× (đo ở TB đơn vị); thời gian chạy cả hệ chỉ giảm 1–3% vì traffic không bị giới hạn bởi băng thông. | S |
 | O2 | ✅ DATA_W 32→128: xong trong 2.6a. | (trong 2.6) |
 | O3 | Đưa đường LLC-hit vào read tracker như đường miss, để FSM chính không bị giữ qua SEND_DAT/WAIT_ACK. Cho phép snoop chồng lấn, nên làm cùng 1.3. | M |
 
@@ -387,7 +478,7 @@ O1, O3: xen vào khi regression đã ổn định.
 Song song: sửa lỗi CoreMark dual-core có sẵn (task riêng), rồi gắn scoreboard L1 vào TB CoreMark.
 ```
 
-**Việc nên làm tiếp ngay:** Giai đoạn 3 đã xong. Lên lịch `run_stress_seeds.ps1` chạy định kỳ (một lượt 24 seed chỉ mất vài phút). Bài học 2.9: stress rn3 là cấu hình duy nhất có hai sharer cùng lúc, nên phải chạy đủ 24 seed trước khi commit.
+**Việc nên làm tiếp ngay:** Giai đoạn 3 đã xong. Stress không được lên lịch định kỳ (quyết định 2026-10-09), nên vẫn phải chạy tay `run_stress_seeds.ps1` trước mỗi commit RTL. Bài học 2.9: stress rn3 là cấu hình duy nhất có hai sharer cùng lúc, nên phải chạy đủ mọi seed trước khi commit.
 
 ## 5. Bàn giao cho phiên tiếp theo
 
@@ -402,8 +493,8 @@ Song song: sửa lỗi CoreMark dual-core có sẵn (task riêng), rồi gắn s
 
 **Cách chạy**
 - Một TB: `scripts/run_tb_chi_xsim.ps1 -Top <tb> -Tag <dir> [-PlusArgs "A B=1"] [-Defines "X Y=3"] [-SkipCompile]`. Log ở `reports/<Tag>/xsim.log`. Checker giao thức tự được bind vào mọi `chi_top`.
-- Toàn bộ: `scripts/run_regression.ps1 -Prefix <p>` (khoảng 20 phút, mặc định `CHK_SPEC_ALL`). Bước cuối là CoreMark dual-core (`coremark_dual_core`, thêm khoảng 3 phút; `-SkipCoreMark` để bỏ; không chạy khi truyền `-Tops` hoặc ở repo phẳng). Trong worktree mới phải chép `CHI_Interconnect.sim/sim_1/behav/xsim/glbl.v` từ checkout chính.
-- CoreMark riêng: `scripts/run_coremark_dual_core_xsim.ps1 -SplitImages 1 -StartMask 3 -TimeoutCycles 3000000`. Mặc định `SplitImages 0` nạp sai image và sẽ timeout; đó là lỗi cấu hình, không phải lỗi RTL.
+- Toàn bộ: `scripts/run_regression.ps1 -Prefix <p>` (khoảng 20 phút, mặc định `CHK_SPEC_ALL`). Hai bước cuối là CoreMark dual-core ở hai cấu hình (`coremark_dual_core` và `coremark_dual_core_l1`, thêm khoảng 5 phút; `-SkipCoreMark` để bỏ; không chạy khi truyền `-Tops` hoặc ở repo phẳng). Trong worktree mới phải chép `CHI_Interconnect.sim/sim_1/behav/xsim/glbl.v` từ checkout chính.
+- CoreMark riêng: `scripts/run_coremark_dual_core_xsim.ps1 -SplitImages 1 -StartMask 3 -TimeoutCycles 3000000`. Mặc định `SplitImages 0` nạp sai image và sẽ timeout; đó là lỗi cấu hình, không phải lỗi RTL. Thêm `-ExternalL1 1` để D-L1 là cache của RN và bật scoreboard L1 (log ở `reports/coremark_l1`). `-PlusArgs` (mặc định `CHK_SPEC_ALL`) đi tới checker giao thức, giờ được bind vào cả TB CoreMark.
 - Stress nhiều seed: `scripts/run_stress_seeds.ps1 [-Seeds 1,2,3] [-Configs rn2,rn3,icg,rn2nb,rn3nb] [-Prefix p]` (mặc định 8 seed × 5 cấu hình = 40 lượt, khoảng 10 phút). rn2/rn3/icg dùng `+BARRIER=25`: mọi RN dừng lại mỗi 25 thao tác, nhờ đó scoreboard kiểm trạng thái 13–26 lần mỗi lượt và clock gate có khoảng nghỉ. rn2nb/rn3nb không barrier: tải liên tục, nhưng scoreboard chỉ kiểm trạng thái 2–6 lần.
 - Stress đơn: `-Top tb_chi_random_stress -PlusArgs "SEED=n OPS=n [CG] [NO_WBFULL] CHK_SPEC_ALL" [-Defines "STRESS_NUM_RN=3 CHI_SIM_REAL_ICG"]`.
 - Lần vết một dòng: thêm `TRACE_LINE=<hex addr>` vào PlusArgs.
@@ -430,10 +521,17 @@ Song song: sửa lỗi CoreMark dual-core có sẵn (task riêng), rồi gắn s
 - Kết quả kiểm RED của 3.4 (đột biến trên bản sao, `tb_CHI +SYSCO_ONLY +CHK_SPEC_ALL`): HN không che và không quét SF → T57 báo SF còn liệt kê RN0 khi SYSCOACK hạ; cùng đột biến đó nhưng bỏ phép kiểm SF của TB → `SPEC_SYSCO` báo RN0 bị snoop ngoài domain (2 lần) và T57 báo 2 snoop tới RN0; RN hạ SYSCOREQ không flush → scoreboard báo `SB_SF_SUPERSET` (RN0 còn giữ dòng mà SF không liệt kê) và T57 fail; SYSCOACK hạ không chờ `sysco_quiet` → T57 báo SF còn 2 entry liệt kê RN0 lúc SYSCOACK hạ; RN ngoài domain vẫn nhận lệnh CPU → T57 fail; MN không che SnpDVMOp → `SPEC_SYSCO` và T57 báo 2 snoop tới RN0. RTL đúng: T57 PASS, 0 lỗi.
 - Kiểm phần còn lại của 3.3 (2026-10-07): Vivado 2024.1 mở `CHI_Interconnect.xpr` (chỉ đọc, batch) thấy 75 file, không thiếu file nào, có đủ ba file `chi_link_active_tx.v`, `chi_link_active_rx.v`, `chi_link_tx_crd.v`; `check_syntax` không chạy được ở chế độ chỉ đọc. Project CoreMark compile sạch các file đó.
 
+**Trạng thái khi dừng phiên (2026-10-12)**
+- `fix/phase1-correctness` = `work/p30-link`: commit tài liệu này nằm ngay trên `43ed0ff` (sửa deadlock L1 ngoài) và `ffb5d37` (O1). Mọi cây sạch. Repo phẳng trên GitHub vẫn ở `3c2a7bd`: O1 chưa export, cần người dùng đồng ý trước khi push.
+- Kết quả kiểm ở `43ed0ff`: regression 19/19 (CoreMark 433,553579 với cache trong RN-F; 431,387774 ở chế độ L1 ngoài), stress 40/40, tb_CHI T01..T57 ở chế độ `CHI_SIM_REAL_ICG +CG_ALWAYS`, 0 lỗi checker và scoreboard.
+- Phần interconnect CHI: Giai đoạn 1–4, O1 và O2 đã xong. Còn lại, đều không cần sửa core: **O3** (tối ưu, mục duy nhất còn ❌), **UCE ở RN** (đã hoãn từ Giai đoạn 2), **export O1 lên GitHub**.
+- Người dùng chưa muốn đụng vào core lúc này (2026-10-10). Vì vậy để yên: JALR ở bản sao `Driver\RTL_Code` của repo MCU, STREX và SYSCO ở chế độ L1 ngoài, I-fetch dùng ReadOnce, cổng snoop cho I-cache.
+- I-fetch dùng ReadOnce lớn hơn một chỗ sửa ở bridge: cổng CPU của RN chưa có op ReadOnce (`chi_defs.vh` dừng ở `CHI_CPU_OP_WR_UNIQUE` = 9), và chưa kiểm snoop filter của home có ghi requester của ReadOnce làm sharer hay không. Nếu làm thì là một bước ở tầng CHI: op mới ở RN, xử lý ở home, luật checker, test.
+
 **Việc tiếp theo, theo thứ tự**
-1. Giai đoạn 3 đã xong. UCE ở RN để sau. Sau mỗi bước đưa lên GitHub: chạy `bash scripts/export_github.sh`, chạy regression trong repo phẳng (9 testbench), rồi commit và push.
+1. Giai đoạn 3 đã xong. UCE ở RN để sau. Sau mỗi bước đưa lên GitHub: chạy `bash scripts/export_github.sh`, chạy regression trong repo phẳng (10 testbench, tính cả `tb_chi_flit_reg_slice`), rồi commit và push.
 2. (Layout flit giờ theo B13.9: offset field lấy từ macro `CHI_*_LSB(NID)` trong `chi_defs.vh`, đừng hardcode; module mới dựng/tách flit phải gọi `CHI_FLIT_PARAM_CHECK`.)
-3. Lên lịch `run_stress_seeds.ps1` chạy định kỳ (barrier đã thành tùy chọn, xong 2026-10-07).
-4. Gắn `chi_l1_coherence_scoreboard.svh` vào TB CoreMark (CoreMark đã PASS và đã vào regression).
-5. Core RISC-V: mỗi lần re-sync từ repo MCU phải giữ bản vá thứ 7 `.id_ex_jal(id_ex_jal | id_ex_jalr)` ở instance `EX_MEM` của `riscv_pipeline.v`. Core MCU gốc cũng thiếu đường này (mọi `jalr` có `rd ≠ x0` ghi sai `rd`); nên sửa ở repo MCU.
-6. Hiệu năng: CoreMark = 433,35 ở đầu nhánh so với 595,50 ở `16c219b` (core cũ, chưa có link layer). Chưa tách phần do core mới (thêm một nhịp mỗi lần đổi hướng) và phần do link layer.
+3. Không lên lịch `run_stress_seeds.ps1` định kỳ (quyết định 2026-10-09); chạy tay trước mỗi commit RTL.
+4. ✅ (2026-10-09) Deadlock ở chế độ L1 ngoài đã sửa và CoreMark L1 ngoài chạy mặc định trong regression (mục cập nhật 2026-10-09). Việc mở ra từ đó: STREX và SYSCO ở chế độ L1 ngoài; cho I-fetch dùng ReadOnce để I-cache không còn là sharer trong snoop filter.
+5. Core RISC-V: mỗi lần re-sync từ repo MCU phải kiểm bản vá thứ 7 `.id_ex_jal(id_ex_jal | id_ex_jalr)` ở instance `EX_MEM` của `riscv_pipeline.v`. Bản MCU ở `RTL-code\core` đã được sửa ngày 2026-10-09 (bản gốc lưu cạnh nó với đuôi `.bak_2026-10-09_before_jalr_link`; thư mục đó không phải repo git). Bản sao cũ ở `Driver\RTL_Code\core` vẫn thiếu đường này.
+6. ✅ (2026-10-08) Hiệu năng: mức giảm CoreMark từ 595,50 (`16c219b`) xuống 433,35 là do core mới (99,9% số chu kỳ tăng thêm; stall nhân/chia và load-use chiếm phần lớn). Link layer chỉ thêm 114 chu kỳ. Số liệu ở mục cập nhật 2026-10-08. Nếu cần lấy lại điểm thì việc nằm ở core (repo MCU), không ở interconnect.

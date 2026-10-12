@@ -16,6 +16,7 @@ param(
         "tb_chi_rn_f_qos_xbar4",
         "tb_chi_snoop_txnid_3rn",
         "tb_chi_link_layer",
+        "tb_chi_flit_reg_slice",
         "tb_chi_random_stress"
     ),
     [string]$Prefix = "reg",
@@ -25,7 +26,7 @@ param(
     # into every chi_top). Each phase-2 step adds its rules here once the RTL
     # is clean against them; pass -SpecPlusArgs "" to run without them.
     [string]$SpecPlusArgs = "CHK_SPEC_ALL",
-    # Leave out the CoreMark dual-core run at the end (about 3 minutes).
+    # Leave out the two CoreMark dual-core runs at the end (about 5 minutes).
     [switch]$SkipCoreMark
 )
 
@@ -97,27 +98,42 @@ $cmRunner = Join-Path $PSScriptRoot "run_coremark_dual_core_xsim.ps1"
 if (-not $SkipCoreMark -and -not $PSBoundParameters.ContainsKey("Tops") -and
     (Test-Path -LiteralPath $cmRunner) -and
     -not (Test-Path -LiteralPath (Join-Path $repoRoot "chi_top.v"))) {
-    $cmLog = Join-Path $repoRoot "reports/coremark/xsim_coremark_dual_core.log"
-    if (Test-Path -LiteralPath $cmLog) { Remove-Item -LiteralPath $cmLog -Force }
-    $verdict = "PASS"
-    $detail = ""
-    try {
-        & $cmRunner -VivadoBin $VivadoBin -SplitImages 1 -StartMask 3 -TimeoutCycles 3000000 *>&1 | Out-Null
-    } catch {
-        $detail = $_.Exception.Message
+    # coremark_dual_core: each RN-F keeps its own cache (the score is tracked
+    # on this one). coremark_dual_core_l1: the D-L1 is the snooped RN cache,
+    # checked by the L1 coherence scoreboard. Both carry the protocol checker,
+    # so a checker or scoreboard line fails the step even when the firmware
+    # finishes.
+    $cmRuns = @(@{ Name = "coremark_dual_core"; Tag = "coremark"; ExternalL1 = 0 },
+                @{ Name = "coremark_dual_core_l1"; Tag = "coremark_l1"; ExternalL1 = 1 })
+    foreach ($cm in $cmRuns) {
+        $cmLog = Join-Path $repoRoot "reports/$($cm.Tag)/xsim_coremark_dual_core.log"
+        if (Test-Path -LiteralPath $cmLog) { Remove-Item -LiteralPath $cmLog -Force }
+        $verdict = "PASS"
+        $detail = ""
+        try {
+            & $cmRunner -VivadoBin $VivadoBin -SplitImages 1 -StartMask 3 -TimeoutCycles 3000000 `
+                -ExternalL1 $cm.ExternalL1 -Tag $cm.Tag -PlusArgs $SpecPlusArgs *>&1 | Out-Null
+        } catch {
+            $detail = $_.Exception.Message
+        }
+        if (-not (Test-Path -LiteralPath $cmLog)) {
+            $verdict = "BUILD_FAIL"
+        } else {
+            $bad = Select-String -Path $cmLog -Pattern "\[COREMARK\] FAIL|CHI_CHK ERROR|CHI_SBL1 ERROR" | Select-Object -First 3
+            if ($bad) {
+                $verdict = "FAIL"
+                $detail = ($bad | ForEach-Object { $_.Line.Trim() }) -join " | "
+            } elseif (-not (Select-String -Path $cmLog -Pattern "[COREMARK] PASS" -SimpleMatch)) {
+                $verdict = "FAIL"
+                if ($detail -eq "") { $detail = "no [COREMARK] PASS line" }
+            } else {
+                $score = Select-String -Path $cmLog -Pattern "[COREMARK] CoreMark=" -SimpleMatch | Select-Object -First 1
+                $detail = if ($score) { $score.Line.Trim() } else { "" }
+            }
+        }
+        $results += [pscustomobject]@{ Testbench = $cm.Name; Verdict = $verdict; Detail = $detail }
+        Write-Host ("[{0,-10}] {1} {2}" -f $verdict, $cm.Name, $detail)
     }
-    if (-not (Test-Path -LiteralPath $cmLog)) {
-        $verdict = "BUILD_FAIL"
-    } elseif (-not (Select-String -Path $cmLog -Pattern "[COREMARK] PASS" -SimpleMatch)) {
-        $verdict = "FAIL"
-        $bad = Select-String -Path $cmLog -Pattern "[COREMARK] FAIL" -SimpleMatch | Select-Object -First 1
-        if ($bad) { $detail = $bad.Line.Trim() }
-    } else {
-        $score = Select-String -Path $cmLog -Pattern "[COREMARK] CoreMark=" -SimpleMatch | Select-Object -First 1
-        $detail = if ($score) { $score.Line.Trim() } else { "" }
-    }
-    $results += [pscustomobject]@{ Testbench = "coremark_dual_core"; Verdict = $verdict; Detail = $detail }
-    Write-Host ("[{0,-10}] {1} {2}" -f $verdict, "coremark_dual_core", $detail)
 }
 
 $failed =@($results | Where-Object { $_.Verdict -ne "PASS" })

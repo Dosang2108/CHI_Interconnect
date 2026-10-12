@@ -19,7 +19,14 @@
 // Violations print "CHI_SBL1 ERROR:". +CHI_SB_OFF disables it.
 // A testbench that puts a line into an L1 behind the fabric's back (backdoor
 // seeding) calls sbl1_exempt_line(addr); that line is not checked.
+// A testbench whose tiles remap D-side addresses per core (DATA_REMAP_*)
+// defines `SBL1_PHYS(core, addr) before the include: it turns an L1 address
+// into the address the interconnect sees. Without it the two are the same.
 // -----------------------------------------------------------------------------
+`ifndef SBL1_PHYS
+`define SBL1_PHYS(core, addr) (addr)
+`define SBL1_PHYS_IS_DEFAULT
+`endif
 localparam integer SBL1_IDLE_CYCLES = 8;
 localparam integer SBL1_SETS = 1 << DC_INDEX_W;
 
@@ -95,14 +102,20 @@ function automatic [1:0] sbl1_sf_sharers(input [ADDR_WIDTH-1:0] line);
     end
 endfunction
 
+// The address the interconnect sees for the line in (core, set, way).
+function automatic [ADDR_WIDTH-1:0] sbl1_line(input int core, input int set, input int way);
+    bit [ADDR_WIDTH-1:0] l1_addr;
+    l1_addr = {sbl1_tag(core, set, way), set[DC_INDEX_W-1:0], 6'b0};
+    sbl1_line = `SBL1_PHYS(core, l1_addr);
+endfunction
+
+// Every set is searched: a per-core remap may move a line to another set.
 function automatic bit sbl1_holds(input int core, input [ADDR_WIDTH-1:0] line);
-    int set;
     sbl1_holds = 1'b0;
-    set = line[6 +: DC_INDEX_W];
-    for (int w = 0; w < DC_WAYS; w++)
-        if (sbl1_valid(core, set, w) &&
-            (sbl1_tag(core, set, w) == line[ADDR_WIDTH-1 -: DC_TAG_W]))
-            sbl1_holds = 1'b1;
+    for (int s = 0; s < SBL1_SETS; s++)
+        for (int w = 0; w < DC_WAYS; w++)
+            if (sbl1_valid(core, s, w) && (sbl1_line(core, s, w) == line))
+                sbl1_holds = 1'b1;
 endfunction
 
 task automatic sbl1_err(input string rule, input string msg);
@@ -118,7 +131,7 @@ task automatic sbl1_check;
         for (int s = 0; s < SBL1_SETS; s++)
             for (int w = 0; w < DC_WAYS; w++)
                 if (sbl1_valid(c, s, w)) begin
-                    line = {sbl1_tag(c, s, w), s[DC_INDEX_W-1:0], 6'b0};
+                    line = sbl1_line(c, s, w);
                     if (sbl1_exempt.exists(longint'(line >> 6)))
                         continue;
                     sbl1_lines = sbl1_lines + 1;
@@ -159,3 +172,7 @@ final begin
         $display("CHI_SBL1 SUMMARY violations=%0d checks=%0d lines_checked=%0d",
                  sbl1_errors, sbl1_checks, sbl1_lines);
 end
+`ifdef SBL1_PHYS_IS_DEFAULT
+`undef SBL1_PHYS
+`undef SBL1_PHYS_IS_DEFAULT
+`endif
